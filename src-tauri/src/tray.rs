@@ -38,7 +38,9 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
     }
-    builder.build(app)?;
+    let tray = builder.build(app)?;
+    // Keep the tray icon alive for the whole process lifetime.
+    std::mem::forget(tray);
     Ok(())
 }
 

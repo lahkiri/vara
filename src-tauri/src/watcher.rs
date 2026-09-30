@@ -8,13 +8,14 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use vara_core::types::EntityEvent;
+use vara_core::EventSink;
 
 pub fn start(app: &AppHandle, path: std::path::PathBuf) -> Result<(), String> {
-    let path = path.trim().to_string();
-    if path.is_empty() {
+    let path_str = path.to_string_lossy().trim().to_string();
+    if path_str.is_empty() {
         return Ok(()); // nothing to watch
     }
-    let path = std::path::PathBuf::from(&path);
+    let path = std::path::PathBuf::from(&path_str);
     if !path.is_dir() {
         return Err(format!("watch path is not a directory: {}", path.display()));
     }

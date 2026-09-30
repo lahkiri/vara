@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use vara_core::db::Database;
-use vara_core::types::{EntityEvent, Settings};
-use vara_core::EntityRuntime;
+use vara_core::types::Settings;
+use vara_core::{EntityEvent, EntityRuntime};
 
 pub struct AppState {
     pub db: Arc<Database>,
@@ -236,12 +236,11 @@ pub fn apply_settings_side_effects(app: &AppHandle) {
     // Autostart.
     {
         use tauri_plugin_autostart::ManagerExt;
-        if let Ok(mgr) = app.autolaunch() {
-            if snap.autonomy.autostart {
-                let _ = mgr.enable();
-            } else {
-                let _ = mgr.disable();
-            }
+        let mgr = app.autolaunch();
+        if snap.autonomy.autostart {
+            let _ = mgr.enable();
+        } else {
+            let _ = mgr.disable();
         }
     }
 

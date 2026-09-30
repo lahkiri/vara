@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use vara_core::types::*;
+use vara_core::{EntityRuntime, LlmClient, MissionInputs};
 
 #[derive(serde::Serialize)]
 pub struct EntityStatus {
