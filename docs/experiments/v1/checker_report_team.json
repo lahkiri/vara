@@ -1,0 +1,174 @@
+{
+  "verdict": "FAIL",
+  "rule": "كل رابط في التقرير ∈ المسترجَع + كل مرجع [n] يقابل مدخلاً في قائمة المصادر",
+  "metrics": {
+    "cited_total": 4,
+    "retrieved_total": 4,
+    "backed_ratio": 1
+  },
+  "cited_not_retrieved": [],
+  "retrieved_not_cited": [],
+  "unresolved_refs": [
+    20
+  ],
+  "sections": [
+    {
+      "title": "Mode B — Dynamic Team (orchestrator + researcher + analyst)",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "Orchestrator decomposition",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "Researcher handoff",
+      "citations": 4,
+      "backed_citations": 4,
+      "effectively_uncovered": false,
+      "no_citations": false
+    },
+    {
+      "title": "Final report",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "التقرير المرجعي: الواقع الفعلي لوكلاء AI الذكية المحلية",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "مقدمة",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "1. قدرة النماذج المحلية الحالية",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "الحجم مقابل الجودة",
+      "citations": 2,
+      "backed_citations": 2,
+      "effectively_uncovered": false,
+      "no_citations": false
+    },
+    {
+      "title": "الأداء مقارنة بالنماذج السحابية",
+      "citations": 1,
+      "backed_citations": 1,
+      "effectively_uncovered": false,
+      "no_citations": false
+    },
+    {
+      "title": "2. موثوقية استدعاء الأدوات (Tool Calling)",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "الوضع الحالي",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "مؤشرات أولية",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "3. القيود العملية للأجهزة",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "الفجوات المعرفية",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "المتطلبات المتوقعة",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "4. الأطر والمشاريع البرمجية البارزة لبناء وكلاء محليين",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "الفجوات المعرفية",
+      "citations": 1,
+      "backed_citations": 0,
+      "effectively_uncovered": true,
+      "no_citations": false
+    },
+    {
+      "title": "المتوقع من الأطر",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "5. اتجاهات السوق الأخيرة",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "الفجوات المعرفية",
+      "citations": 1,
+      "backed_citations": 0,
+      "effectively_uncovered": true,
+      "no_citations": false
+    },
+    {
+      "title": "التوقعات",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "خلاصة",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    }
+  ],
+  "checks": {
+    "C1_all_cited_in_retrieved": true,
+    "C2_refs_resolve_to_source_list": false
+  }
+}

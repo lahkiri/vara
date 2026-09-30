@@ -1,0 +1,885 @@
+//! The autonomy loop — Vara's state machine and mission runner.
+//!
+//! Design principles (from the v1 experiment, frozen in EXPERIMENT_DESIGN.md):
+//! - Token budgets are binding, not advisory.
+//! - Notes are deduplicated (Jaccard >= 0.72) so memory never rots.
+//! - Reports are written by a *clean-context writer* that sees only the
+//!   retrieval ledger — and every report passes the structural provenance
+//!   checker before it is delivered. FAIL triggers one repair pass.
+//! - Mid-mission replanning keeps the organization alive instead of
+//!   committing to a blind handoff (the "drifted researcher" failure).
+
+use crate::db::Database;
+use crate::llm::{extract_json, LlmClient};
+use crate::provenance;
+use crate::tools::{truncate, HttpClient};
+use crate::types::*;
+use crate::{Result, VaraError};
+use serde::Serialize;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+// ---------- events ----------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EntityEvent {
+    State {
+        state: EntityState,
+        mission_id: Option<i64>,
+    },
+    Activity {
+        kind: String,
+        message: String,
+        mission_id: Option<i64>,
+    },
+    MissionUpdate {
+        id: i64,
+        status: String,
+        steps_done: i64,
+        max_steps: i64,
+        spent_tokens: i64,
+    },
+    ReportReady {
+        id: i64,
+        mission_id: i64,
+        verdict: String,
+        backed_ratio: f64,
+    },
+}
+
+pub trait EventSink: Send + Sync {
+    fn emit(&self, ev: EntityEvent);
+}
+
+/// No-op sink for tests / headless runs.
+pub struct NullSink;
+impl EventSink for NullSink {
+    fn emit(&self, _: EntityEvent) {}
+}
+
+// ---------- runtime ----------
+
+pub struct EntityRuntime {
+    pub db: Arc<Database>,
+    pub sink: Arc<dyn EventSink>,
+    pub http: Arc<HttpClient>,
+}
+
+pub struct MissionInputs {
+    pub language: String,
+    pub paused: Arc<AtomicBool>,
+    pub cancel: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MissionOutcome {
+    pub mission_id: i64,
+    pub status: String,
+    pub report_id: Option<i64>,
+    pub verdict: Option<String>,
+    pub backed_ratio: Option<f64>,
+    pub sources: usize,
+    pub spent_tokens: i64,
+}
+
+impl EntityRuntime {
+    fn set_state(&self, state: EntityState, mission_id: Option<i64>) {
+        self.sink.emit(EntityEvent::State { state, mission_id });
+        let _ = self.db.insert_event("info", "state", state.as_str());
+    }
+
+    fn activity(&self, kind: &str, message: &str, mission_id: Option<i64>) {
+        self.sink.emit(EntityEvent::Activity {
+            kind: kind.to_string(),
+            message: message.to_string(),
+            mission_id,
+        });
+        let _ = self.db.insert_event("info", kind, message);
+    }
+
+    // ---------- mission lifecycle ----------
+
+    pub async fn run_mission(
+        &self,
+        mission_id: i64,
+        llm: Arc<LlmClient>,
+        input: MissionInputs,
+    ) -> Result<MissionOutcome> {
+        let mission = match self.db.get_mission(mission_id) {
+            Ok(m) => m,
+            Err(e) => return Err(e),
+        };
+        let max_steps = mission.max_steps;
+        let budget = mission.budget_tokens;
+
+        self.set_state(EntityState::Deliberating, Some(mission_id));
+        let _ = self.db.update_mission_status(mission_id, "running", None);
+        self.activity(
+            "mission",
+            &format!("Mission started: {}", truncate(&mission.goal, 90)),
+            Some(mission_id),
+        );
+
+        // 1) Plan.
+        let plan = match self.make_plan(&mission.goal, &llm, &input.language).await {
+            Ok((p, spent)) => {
+                self.record_spent(mission_id, spent);
+                p
+            }
+            Err(e) => {
+                let _ =
+                    self.db
+                        .insert_action(Some(mission_id), "plan", "{}", false, &e.to_string());
+                return Ok(self.fail(mission_id, format!("planning failed: {e}")));
+            }
+        };
+        let dims_json = serde_json::to_string(&plan.dimensions).unwrap_or_else(|_| "[]".into());
+        let _ = self.db.set_mission_dimensions(mission_id, &dims_json);
+        let _ = self.db.insert_action(
+            Some(mission_id),
+            "plan",
+            &serde_json::to_string(&plan).unwrap_or_else(|_| "{}".into()),
+            true,
+            &format!(
+                "{} dimensions, {} steps",
+                plan.dimensions.len(),
+                plan.steps.len()
+            ),
+        );
+        self.activity(
+            "plan",
+            &format!(
+                "Plan ready: {} dimensions, {} steps",
+                plan.dimensions.len(),
+                plan.steps.len()
+            ),
+            Some(mission_id),
+        );
+
+        // 2) Execute steps with live replanning.
+        self.set_state(EntityState::Working, Some(mission_id));
+        let mut ledger: Vec<RetrievedSource> = Vec::new();
+        let mut urls_seen: HashSet<String> = HashSet::new();
+        let mut spent: i64 = 0;
+        let mut steps_done: i64 = 0;
+        let mut plan_steps = plan.steps;
+
+        let mut i = 0usize;
+        while i < plan_steps.len() {
+            if input.cancel.load(Ordering::SeqCst) {
+                let _ = self
+                    .db
+                    .update_mission_progress(mission_id, steps_done, spent);
+                return Ok(self.cancel(mission_id));
+            }
+            while input.paused.load(Ordering::SeqCst) {
+                if input.cancel.load(Ordering::SeqCst) {
+                    return Ok(self.cancel(mission_id));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            if steps_done >= max_steps || spent >= budget {
+                self.activity(
+                    "budget",
+                    "Step/budget limit reached — moving to the report",
+                    Some(mission_id),
+                );
+                break;
+            }
+
+            let step = plan_steps[i].clone();
+            match step.kind.as_str() {
+                "report" => break,
+                "search" => {
+                    let q = step.query.trim();
+                    if !q.is_empty() {
+                        self.activity("search", &format!("Searching: {q}"), Some(mission_id));
+                        match self.http.web_search(q, 5).await {
+                            Ok(hits) => {
+                                let mut added = 0usize;
+                                for h in hits {
+                                    let norm = provenance::normalize_url(&h.url);
+                                    if urls_seen.contains(&norm) {
+                                        continue;
+                                    }
+                                    if let Ok(Some(note_id)) = self.db.add_note_if_new(
+                                        "research",
+                                        &h.title,
+                                        &h.snippet,
+                                        Some(mission_id),
+                                        Some(&h.url),
+                                        Some(&h.title),
+                                    ) {
+                                        urls_seen.insert(norm);
+                                        ledger.push(RetrievedSource {
+                                            url: h.url.clone(),
+                                            title: h.title.clone(),
+                                            fetched: false,
+                                            note_id: Some(note_id),
+                                        });
+                                        let _ = self
+                                            .db
+                                            .insert_source(mission_id, &h.url, &h.title, false);
+                                        added += 1;
+                                    }
+                                }
+                                let _ = self.db.insert_action(
+                                    Some(mission_id),
+                                    "search",
+                                    &serde_json::json!({"query": q}).to_string(),
+                                    true,
+                                    &format!("new sources: {added}"),
+                                );
+                                if added == 0 {
+                                    self.activity(
+                                        "dedup",
+                                        "All results were duplicates — nothing added",
+                                        Some(mission_id),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                let _ = self.db.insert_action(
+                                    Some(mission_id),
+                                    "search",
+                                    &serde_json::json!({"query": q}).to_string(),
+                                    false,
+                                    &e.to_string(),
+                                );
+                                self.activity(
+                                    "error",
+                                    &format!("Search failed: {e}"),
+                                    Some(mission_id),
+                                );
+                            }
+                        }
+                    }
+                }
+                "fetch" => {
+                    let u = step.url.trim();
+                    if !u.is_empty() {
+                        self.activity(
+                            "fetch",
+                            &format!("Reading: {}", truncate(u, 70)),
+                            Some(mission_id),
+                        );
+                        match self.http.fetch_page(u, 4500).await {
+                            Ok(page) => {
+                                let norm = provenance::normalize_url(&page.url);
+                                if !urls_seen.contains(&norm) {
+                                    let excerpt: String = page.text.chars().take(1200).collect();
+                                    if let Ok(Some(note_id)) = self.db.add_note_if_new(
+                                        "research",
+                                        &page.title,
+                                        &excerpt,
+                                        Some(mission_id),
+                                        Some(&page.url),
+                                        Some(&page.title),
+                                    ) {
+                                        urls_seen.insert(norm);
+                                        ledger.push(RetrievedSource {
+                                            url: page.url.clone(),
+                                            title: page.title.clone(),
+                                            fetched: true,
+                                            note_id: Some(note_id),
+                                        });
+                                        let _ = self.db.insert_source(
+                                            mission_id,
+                                            &page.url,
+                                            &page.title,
+                                            true,
+                                        );
+                                    }
+                                }
+                                let _ = self.db.insert_action(
+                                    Some(mission_id),
+                                    "fetch",
+                                    &serde_json::json!({"url": u}).to_string(),
+                                    true,
+                                    &truncate(&page.title, 60),
+                                );
+                            }
+                            Err(e) => {
+                                let _ = self.db.insert_action(
+                                    Some(mission_id),
+                                    "fetch",
+                                    &serde_json::json!({"url": u}).to_string(),
+                                    false,
+                                    &e.to_string(),
+                                );
+                                self.activity(
+                                    "error",
+                                    &format!("Fetch failed: {e}"),
+                                    Some(mission_id),
+                                );
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    let _ = self.db.insert_action(
+                        Some(mission_id),
+                        "unknown_step",
+                        &serde_json::to_string(&step).unwrap_or_default(),
+                        false,
+                        "unknown step kind",
+                    );
+                }
+            }
+
+            i += 1;
+            steps_done += 1;
+            let _ = self
+                .db
+                .update_mission_progress(mission_id, steps_done, spent);
+            self.sink.emit(EntityEvent::MissionUpdate {
+                id: mission_id,
+                status: "running".into(),
+                steps_done,
+                max_steps,
+                spent_tokens: spent,
+            });
+
+            // Live replan every 4 executed steps — the organization stays alive.
+            if i % 4 == 0 && i < plan_steps.len() && spent < budget {
+                match self
+                    .replan(
+                        &mission.goal,
+                        &ledger,
+                        spent,
+                        budget,
+                        &plan_steps[i..],
+                        &llm,
+                    )
+                    .await
+                {
+                    Ok((new_tail, r_spent)) => {
+                        spent += r_spent as i64;
+                        if !new_tail.is_empty() {
+                            plan_steps.truncate(i);
+                            plan_steps.extend(new_tail);
+                            self.activity(
+                                "replan",
+                                "Plan adjusted mid-mission based on findings",
+                                Some(mission_id),
+                            );
+                        }
+                    }
+                    Err(_) => { /* keep the original plan */ }
+                }
+            }
+        }
+
+        // 3) Report with provenance gate.
+        if ledger.is_empty() {
+            let _ = self
+                .db
+                .update_mission_progress(mission_id, steps_done, spent);
+            return Ok(self.fail(
+                mission_id,
+                "no sources retrieved — nothing to report honestly".into(),
+            ));
+        }
+
+        self.set_state(EntityState::Reporting, Some(mission_id));
+        self.activity(
+            "report",
+            "Writing the report (provenance enforced)…",
+            Some(mission_id),
+        );
+        let retrieved_urls: Vec<String> = ledger.iter().map(|s| s.url.clone()).collect();
+        let sources_json = serde_json::to_value(&ledger).unwrap_or(serde_json::json!([]));
+
+        let (markdown, w_spent) = match self
+            .write_report(
+                &mission.goal,
+                &plan.dimensions,
+                &ledger,
+                &input.language,
+                &llm,
+            )
+            .await
+        {
+            Ok(x) => x,
+            Err(e) => {
+                let _ = self
+                    .db
+                    .update_mission_progress(mission_id, steps_done, spent);
+                return Ok(self.fail(mission_id, format!("report writing failed: {e}")));
+            }
+        };
+        spent += w_spent as i64;
+        let _ = self
+            .db
+            .update_mission_progress(mission_id, steps_done, spent);
+
+        let check = provenance::check_provenance(&markdown, &retrieved_urls);
+        let mut report_id = self
+            .db
+            .insert_report(
+                mission_id,
+                &markdown,
+                &sources_json,
+                &serde_json::to_value(&check).unwrap_or(serde_json::json!({})),
+                check.metrics.backed_ratio,
+                &check.verdict,
+                false,
+            )
+            .unwrap_or(0);
+        let mut final_check = check;
+
+        if final_check.verdict == "FAIL" {
+            self.activity(
+                "checker",
+                &format!(
+                    "Provenance FAIL ({}%) — one repair attempt…",
+                    (final_check.metrics.backed_ratio * 100.0) as i64
+                ),
+                Some(mission_id),
+            );
+            if let Ok((fixed, r_spent)) = self
+                .repair_report(&markdown, &final_check, &ledger, &input.language, &llm)
+                .await
+            {
+                spent += r_spent as i64;
+                let c2 = provenance::check_provenance(&fixed, &retrieved_urls);
+                report_id = self
+                    .db
+                    .insert_report(
+                        mission_id,
+                        &fixed,
+                        &sources_json,
+                        &serde_json::to_value(&c2).unwrap_or(serde_json::json!({})),
+                        c2.metrics.backed_ratio,
+                        &c2.verdict,
+                        true,
+                    )
+                    .unwrap_or(report_id);
+                final_check = c2;
+                let _ = self
+                    .db
+                    .update_mission_progress(mission_id, steps_done, spent);
+            }
+        }
+
+        let _ = self.db.update_mission_status(mission_id, "completed", None);
+        self.sink.emit(EntityEvent::ReportReady {
+            id: report_id,
+            mission_id,
+            verdict: final_check.verdict.clone(),
+            backed_ratio: final_check.metrics.backed_ratio,
+        });
+        self.activity(
+            "report",
+            &format!(
+                "Report ready — provenance {} ({}% backed)",
+                final_check.verdict,
+                (final_check.metrics.backed_ratio * 100.0) as i64
+            ),
+            Some(mission_id),
+        );
+        self.set_state(EntityState::Attentive, None);
+
+        Ok(MissionOutcome {
+            mission_id,
+            status: "completed".into(),
+            report_id: Some(report_id),
+            verdict: Some(final_check.verdict),
+            backed_ratio: Some(final_check.metrics.backed_ratio),
+            sources: ledger.len(),
+            spent_tokens: spent,
+        })
+    }
+
+    fn record_spent(&self, mission_id: i64, tokens: u64) {
+        if tokens > 0 {
+            let _ =
+                self.db
+                    .insert_action(Some(mission_id), "tokens", "{}", true, &format!("{tokens}"));
+        }
+    }
+
+    fn fail(&self, mission_id: i64, err: String) -> MissionOutcome {
+        let _ = self
+            .db
+            .update_mission_status(mission_id, "failed", Some(&err));
+        let _ = self.db.insert_event("error", "mission", &err);
+        self.activity("error", &format!("Mission failed: {err}"), Some(mission_id));
+        self.set_state(EntityState::Attentive, None);
+        MissionOutcome {
+            mission_id,
+            status: "failed".into(),
+            report_id: None,
+            verdict: None,
+            backed_ratio: None,
+            sources: 0,
+            spent_tokens: 0,
+        }
+    }
+
+    fn cancel(&self, mission_id: i64) -> MissionOutcome {
+        let _ = self.db.update_mission_status(mission_id, "cancelled", None);
+        self.activity(
+            "mission",
+            "Mission cancelled by the owner",
+            Some(mission_id),
+        );
+        self.set_state(EntityState::Attentive, None);
+        MissionOutcome {
+            mission_id,
+            status: "cancelled".into(),
+            report_id: None,
+            verdict: None,
+            backed_ratio: None,
+            sources: 0,
+            spent_tokens: 0,
+        }
+    }
+
+    // ---------- LLM phases ----------
+
+    async fn make_plan(&self, goal: &str, llm: &LlmClient, language: &str) -> Result<(Plan, u64)> {
+        let system = "You are Vara, a persistent autonomous entity planning a research mission. \
+Return ONLY valid JSON — no prose, no markdown fences.\n\
+Schema:\n\
+{\"dimensions\":[{\"name\":\"<short dimension>\",\"question\":\"<what to find out>\"}],\"steps\":[{\"kind\":\"search\",\"query\":\"<concrete web search query>\",\"dimension\":\"<dimension name>\"},{\"kind\":\"fetch\",\"url\":\"<https url>\",\"dimension\":\"<dimension name>\"},{\"kind\":\"report\"}]}\n\
+Rules:\n\
+- 3 to 5 dimensions, each a different angle on the goal.\n\
+- 6 to 10 steps total. At least 2 fetch steps pointing at specific, plausible pages.\n\
+- Search queries: concrete, include product names / versions / benchmarks when relevant. Write queries in English.\n\
+- The LAST step must be {\"kind\":\"report\"}.\n\
+- JSON only.";
+        let user = format!("Mission goal: {goal}");
+        let mut last_err = String::new();
+        for attempt in 0..2 {
+            let mut msgs = vec![ChatMessage::system(system), ChatMessage::user(&user)];
+            if attempt > 0 {
+                msgs.push(ChatMessage::user(format!(
+                    "Your previous answer was invalid: {last_err}. Return ONLY the JSON object."
+                )));
+            }
+            let reply = llm.chat(&msgs, Some(1200)).await?;
+            if let Some(v) = extract_json(&reply.content) {
+                if let Ok(mut plan) = serde_json::from_value::<Plan>(v.clone()) {
+                    normalize_plan(&mut plan, goal);
+                    return Ok((plan, reply.total_tokens()));
+                }
+                last_err = "schema mismatch".into();
+            } else {
+                last_err = "no JSON object found".into();
+            }
+        }
+        // Deterministic fallback plan — Vara stays useful even with a weak model.
+        let _ = language;
+        Ok((fallback_plan(goal), 0))
+    }
+
+    async fn replan(
+        &self,
+        goal: &str,
+        ledger: &[RetrievedSource],
+        spent: i64,
+        budget: i64,
+        remaining: &[PlanStep],
+        llm: &LlmClient,
+    ) -> Result<(Vec<PlanStep>, u64)> {
+        let have: Vec<String> = ledger
+            .iter()
+            .map(|s| format!("- {} ({})", truncate(&s.title, 60), truncate(&s.url, 70)))
+            .collect();
+        let system = "You are Vara mid-mission, re-planning the remaining steps based on what was found. \
+Return ONLY JSON: {\"steps\":[{\"kind\":\"search\",\"query\":\"...\",\"dimension\":\"...\"},{\"kind\":\"fetch\",\"url\":\"...\",\"dimension\":\"...\"},{\"kind\":\"report\"}]}\n\
+Rules: at most 4 steps. The LAST step must be {\"kind\":\"report\"}. If the material is already sufficient, return only the report step. JSON only.";
+        let user = format!(
+            "Goal: {goal}\n\nFound so far:\n{}\n\nBudget used: {spent}/{budget} tokens.\nRemaining planned steps: {}\n\nRe-plan now.",
+            have.join("\n"),
+            serde_json::to_string(remaining).unwrap_or_default()
+        );
+        let reply = llm
+            .chat(
+                &[ChatMessage::system(system), ChatMessage::user(user)],
+                Some(600),
+            )
+            .await?;
+        if let Some(v) = extract_json(&reply.content) {
+            if let Some(steps) = v.get("steps").and_then(|s| s.as_array()) {
+                let mut out: Vec<PlanStep> = steps
+                    .iter()
+                    .filter_map(|s| serde_json::from_value::<PlanStep>(s.clone()).ok())
+                    .filter(|s| ["search", "fetch", "report"].contains(&s.kind.as_str()))
+                    .take(4)
+                    .collect();
+                if let Some(last) = out.last() {
+                    if last.kind != "report" {
+                        out.push(PlanStep {
+                            kind: "report".into(),
+                            query: String::new(),
+                            url: String::new(),
+                            dimension: String::new(),
+                        });
+                    }
+                }
+                return Ok((out, reply.total_tokens()));
+            }
+        }
+        Err(VaraError::Llm("replan: invalid JSON".into()))
+    }
+
+    async fn write_report(
+        &self,
+        goal: &str,
+        dimensions: &[PlanDimension],
+        ledger: &[RetrievedSource],
+        language: &str,
+        llm: &LlmClient,
+    ) -> Result<(String, u64)> {
+        let lang_name = lang_name(language);
+        let system = format!(
+            "You are Vara's report writer. You receive a research ledger of sources actually retrieved during the mission. Write the final report in {lang_name}.\n\n\
+HARD PROVENANCE RULES (enforced by a machine after you write):\n\
+1. Cite ONLY sources from the ledger, using [n] where n is the ledger index shown below.\n\
+2. Never invent sources, URLs, or citation numbers. Any URL absent from the ledger FAILS the report.\n\
+3. If a dimension lacks material, write 'Gap:' explicitly instead of inventing facts. Declared gaps are honest; fabricated sources are fatal.\n\
+4. Attach a citation to every factual claim.\n\
+5. End with a section headed exactly '## Sources' listing each cited source as: [n] URL — title.\n\n\
+Tone: precise, dense, decision-ready. No filler, no self-praise."
+        );
+        let dims: Vec<String> = dimensions
+            .iter()
+            .map(|d| format!("- {}: {}", d.name, d.question))
+            .collect();
+        let mut ledger_lines = Vec::new();
+        for (i, s) in ledger.iter().enumerate() {
+            let body = s
+                .note_id
+                .and_then(|id| self.note_body(id))
+                .unwrap_or_default();
+            ledger_lines.push(format!(
+                "[{}] {} — {}{}",
+                i + 1,
+                s.title,
+                s.url,
+                if body.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n    snippet: {}", truncate(&body, 220))
+                }
+            ));
+        }
+        let user = format!(
+            "Mission goal: {goal}\n\nRequired dimensions:\n{}\n\nResearch ledger:\n{}\n\nWrite the report now.",
+            dims.join("\n"),
+            ledger_lines.join("\n")
+        );
+        let reply = llm
+            .chat(
+                &[ChatMessage::system(system), ChatMessage::user(user)],
+                Some(2400),
+            )
+            .await?;
+        Ok((reply.content.trim().to_string(), reply.total_tokens()))
+    }
+
+    async fn repair_report(
+        &self,
+        report: &str,
+        check: &ProvenanceResult,
+        ledger: &[RetrievedSource],
+        language: &str,
+        llm: &LlmClient,
+    ) -> Result<(String, u64)> {
+        let lang_name = lang_name(language);
+        let ledger_lines: Vec<String> = ledger
+            .iter()
+            .enumerate()
+            .map(|(i, s)| format!("[{}] {} — {}", i + 1, s.title, s.url))
+            .collect();
+        let system = format!(
+            "You repair a report that failed a structural citation check. Write in {lang_name}.\n\
+Keep the good content. Remove or fix invalid citations. If evidence is missing, replace the claim with an explicit 'Gap:' note. \
+The '## Sources' list must contain ONLY ledger entries, numbered exactly as in the ledger. Output the full corrected report only."
+        );
+        let user = format!(
+            "Ledger:\n{}\n\nCheck failures:\n- Unresolved [n] refs: {:?}\n- Cited URLs not in retrieval ledger: {}\n\nReport to fix:\n{}",
+            ledger_lines.join("\n"),
+            check.unresolved_refs,
+            check.cited_not_retrieved.join(", "),
+            report
+        );
+        let reply = llm
+            .chat(
+                &[ChatMessage::system(system), ChatMessage::user(user)],
+                Some(2400),
+            )
+            .await?;
+        Ok((reply.content.trim().to_string(), reply.total_tokens()))
+    }
+
+    /// Idle reflection — the heartbeat. Disabled by default; gentle by design.
+    pub async fn heartbeat(&self, llm: &LlmClient, language: &str) -> Result<String> {
+        let notes = self.db.list_notes(12, 0)?;
+        if notes.is_empty() {
+            return Ok("nothing to reflect on yet".into());
+        }
+        let digest: Vec<String> = notes
+            .iter()
+            .map(|n| format!("- {}: {}", truncate(&n.title, 60), truncate(&n.body, 120)))
+            .collect();
+        let system = format!(
+            "You are Vara, reflecting quietly on your memory. Produce ONE short observation worth remembering (max 50 words) in {}. \
+It may connect two notes, spot a pattern, or pose a sharp question. Output only the observation text.",
+            lang_name(language)
+        );
+        let reply = llm
+            .chat(
+                &[
+                    ChatMessage::system(system),
+                    ChatMessage::user(digest.join("\n")),
+                ],
+                Some(200),
+            )
+            .await?;
+        let body = reply.content.trim().to_string();
+        if body.chars().count() < 15 {
+            return Ok("reflection too short — skipped".into());
+        }
+        match self
+            .db
+            .add_note_if_new("reflection", "Reflection", &body, None, None, None)?
+        {
+            Some(_) => {
+                self.activity("reflection", &truncate(&body, 100), None);
+                Ok(body)
+            }
+            None => Ok("duplicate reflection — skipped".into()),
+        }
+    }
+
+    fn note_body(&self, note_id: i64) -> Option<String> {
+        self.db.get_note(note_id).ok().map(|n| n.body)
+    }
+}
+
+// ---------- helpers ----------
+
+fn lang_name(language: &str) -> &'static str {
+    match language {
+        "ar" | "arabic" => "Arabic",
+        _ => "English",
+    }
+}
+
+fn normalize_plan(plan: &mut Plan, goal: &str) {
+    let valid = ["search", "fetch", "report"];
+    plan.steps.retain(|s| valid.contains(&s.kind.as_str()));
+    if plan.steps.len() > 12 {
+        plan.steps.truncate(12);
+    }
+    if let Some(last) = plan.steps.last() {
+        if last.kind != "report" {
+            plan.steps.push(PlanStep {
+                kind: "report".into(),
+                query: String::new(),
+                url: String::new(),
+                dimension: String::new(),
+            });
+        }
+    } else {
+        plan.steps.push(PlanStep {
+            kind: "report".into(),
+            query: String::new(),
+            url: String::new(),
+            dimension: String::new(),
+        });
+    }
+    if plan.dimensions.is_empty() {
+        plan.dimensions.push(PlanDimension {
+            name: "overview".into(),
+            question: truncate(goal, 100),
+        });
+    }
+}
+
+fn fallback_plan(goal: &str) -> Plan {
+    let g = truncate(goal, 80);
+    Plan {
+        dimensions: vec![
+            PlanDimension {
+                name: "overview".into(),
+                question: g.clone(),
+            },
+            PlanDimension {
+                name: "evidence".into(),
+                question: "concrete numbers and benchmarks".into(),
+            },
+        ],
+        steps: vec![
+            PlanStep {
+                kind: "search".into(),
+                query: g.clone(),
+                dimension: "overview".into(),
+                url: String::new(),
+            },
+            PlanStep {
+                kind: "search".into(),
+                query: format!("{g} benchmark"),
+                dimension: "evidence".into(),
+                url: String::new(),
+            },
+            PlanStep {
+                kind: "search".into(),
+                query: format!("{g} comparison 2026"),
+                dimension: "evidence".into(),
+                url: String::new(),
+            },
+            PlanStep {
+                kind: "report".into(),
+                query: String::new(),
+                url: String::new(),
+                dimension: String::new(),
+            },
+        ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_plan_ends_with_report() {
+        let p = fallback_plan("local inference benchmarks");
+        assert_eq!(p.steps.last().unwrap().kind, "report");
+        assert!(p.steps.len() >= 3);
+    }
+
+    #[test]
+    fn normalize_plan_filters_unknown_kinds_and_appends_report() {
+        let mut p = Plan {
+            dimensions: vec![],
+            steps: vec![
+                PlanStep {
+                    kind: "search".into(),
+                    query: "x".into(),
+                    url: String::new(),
+                    dimension: String::new(),
+                },
+                PlanStep {
+                    kind: "dance".into(),
+                    query: String::new(),
+                    url: String::new(),
+                    dimension: String::new(),
+                },
+            ],
+        };
+        normalize_plan(&mut p, "goal");
+        assert!(p
+            .steps
+            .iter()
+            .all(|s| ["search", "fetch", "report"].contains(&s.kind.as_str())));
+        assert_eq!(p.steps.last().unwrap().kind, "report");
+        assert!(!p.dimensions.is_empty());
+    }
+}

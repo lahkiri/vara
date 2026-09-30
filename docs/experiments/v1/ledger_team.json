@@ -1,0 +1,132 @@
+{
+  "mode": "team",
+  "calls": [
+    {
+      "role": "orchestrator",
+      "in_tok": 390,
+      "out_tok": 897,
+      "src": "usage",
+      "ts": "2026-09-30T19:24:09.306Z"
+    },
+    {
+      "role": "أنت وكيّل باحث (Research",
+      "in_tok": 1365,
+      "out_tok": 265,
+      "src": "usage",
+      "ts": "2026-09-30T19:24:12.167Z"
+    },
+    {
+      "role": "أنت وكيّل باحث (Research",
+      "in_tok": 2317,
+      "out_tok": 207,
+      "src": "usage",
+      "ts": "2026-09-30T19:24:25.056Z"
+    },
+    {
+      "role": "أنت وكيّل باحث (Research",
+      "in_tok": 3268,
+      "out_tok": 262,
+      "src": "usage",
+      "ts": "2026-09-30T19:24:41.825Z"
+    },
+    {
+      "role": "أنت وكيّل باحث (Research",
+      "in_tok": 3372,
+      "out_tok": 229,
+      "src": "usage",
+      "ts": "2026-09-30T19:24:52.138Z"
+    },
+    {
+      "role": "أنت وكيّل باحث (Research",
+      "in_tok": 3091,
+      "out_tok": 230,
+      "src": "usage",
+      "ts": "2026-09-30T19:25:00.981Z"
+    },
+    {
+      "role": "أنت وكيّل باحث (Research",
+      "in_tok": 3029,
+      "out_tok": 268,
+      "src": "usage",
+      "ts": "2026-09-30T19:25:10.891Z"
+    },
+    {
+      "role": "أنت وكيّل باحث (Research",
+      "in_tok": 3089,
+      "out_tok": 263,
+      "src": "usage",
+      "ts": "2026-09-30T19:25:20.520Z"
+    },
+    {
+      "role": "أنت وكيّل باحث (Research",
+      "in_tok": 2924,
+      "out_tok": 258,
+      "src": "usage",
+      "ts": "2026-09-30T19:25:41.921Z"
+    },
+    {
+      "role": "أنت وكيّل باحث (Research",
+      "in_tok": 3038,
+      "out_tok": 253,
+      "src": "usage",
+      "ts": "2026-09-30T19:26:02.829Z"
+    },
+    {
+      "role": "أنت وكيّل باحث (Research",
+      "in_tok": 3481,
+      "out_tok": 787,
+      "src": "usage",
+      "ts": "2026-09-30T19:26:16.911Z"
+    },
+    {
+      "role": "أنت وكيّل محلل (Analyst)",
+      "in_tok": 3286,
+      "out_tok": 128,
+      "src": "usage",
+      "ts": "2026-09-30T19:26:19.552Z"
+    },
+    {
+      "role": "أنت وكيّل محلل (Analyst)",
+      "in_tok": 3445,
+      "out_tok": 128,
+      "src": "usage",
+      "ts": "2026-09-30T19:26:38.145Z"
+    },
+    {
+      "role": "أنت وكيّل محلل (Analyst)",
+      "in_tok": 3611,
+      "out_tok": 138,
+      "src": "usage",
+      "ts": "2026-09-30T19:26:58.016Z"
+    },
+    {
+      "role": "أنت وكيّل محلل (Analyst)",
+      "in_tok": 4163,
+      "out_tok": 366,
+      "src": "usage",
+      "ts": "2026-09-30T19:27:20.091Z"
+    },
+    {
+      "role": "أنت وكيّل محلل (Analyst)",
+      "in_tok": 4726,
+      "out_tok": 365,
+      "src": "usage",
+      "ts": "2026-09-30T19:27:38.466Z"
+    },
+    {
+      "role": "أنت وكيّل محلل (Analyst)",
+      "in_tok": 4727,
+      "out_tok": 1509,
+      "src": "usage",
+      "ts": "2026-09-30T19:28:10.576Z"
+    }
+  ],
+  "searches": 14,
+  "notes": 27,
+  "iterations": 16,
+  "est_tokens": 50982,
+  "real_tokens": 59875,
+  "token_source": "usage",
+  "wall_ms": 249136,
+  "stopped_because": "iterations_exhausted"
+}

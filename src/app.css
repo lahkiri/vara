@@ -1,0 +1,139 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #0b0e1a;
+  --bg2: #10142a;
+  --card: rgba(255, 255, 255, 0.045);
+  --card-hover: rgba(255, 255, 255, 0.08);
+  --line: rgba(255, 255, 255, 0.09);
+  --text: #e8eaf6;
+  --muted: #9aa1c0;
+  --accent: #8b8cf0;
+  --accent-soft: rgba(139, 140, 240, 0.14);
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --bad: #f87171;
+}
+
+html,
+body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", Tahoma, system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Persona accents — switched from JS when the style changes */
+[data-persona="classic"] { --accent: #8b8cf0; --accent-soft: rgba(139, 140, 240, 0.14); }
+[data-persona="dark"]    { --accent: #a855f7; --accent-soft: rgba(168, 85, 247, 0.14); }
+[data-persona="stealth"] { --accent: #94a3b8; --accent-soft: rgba(148, 163, 184, 0.14); }
+[data-persona="tech"]    { --accent: #22d3ee; --accent-soft: rgba(34, 211, 238, 0.13); }
+[data-persona="nature"]  { --accent: #34d399; --accent-soft: rgba(52, 211, 153, 0.13); }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  backdrop-filter: blur(8px);
+}
+
+.btn {
+  background: var(--accent);
+  color: #0b0e1a;
+  font-weight: 700;
+  border-radius: 0.75rem;
+  padding: 0.55rem 1.1rem;
+  transition: filter 0.15s ease, transform 0.05s ease;
+}
+.btn:hover { filter: brightness(1.1); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  padding: 0.5rem 1rem;
+  transition: background 0.15s ease;
+}
+.btn-ghost:hover { background: var(--card-hover); }
+
+.input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  padding: 0.6rem 0.9rem;
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+.input:focus { border-color: var(--accent); }
+.input::placeholder { color: var(--muted); }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  padding: 0.18rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 24px 2px var(--accent-soft); }
+  50% { box-shadow: 0 0 44px 8px var(--accent-soft); }
+}
+.pulse { animation: pulse-glow 2.4s ease-in-out infinite; }
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fade-up 0.25s ease both; }
+
+.md-body { line-height: 1.75; }
+.md-body h1 { font-size: 1.4rem; font-weight: 800; margin: 1.1rem 0 0.5rem; }
+.md-body h2 { font-size: 1.15rem; font-weight: 700; margin: 1rem 0 0.45rem; }
+.md-body h3 { font-size: 1rem; font-weight: 700; margin: 0.8rem 0 0.4rem; }
+.md-body p { margin: 0.45rem 0; }
+.md-body ul, .md-body ol { margin: 0.45rem 1.4rem; }
+.md-body ul { list-style: disc; }
+.md-body ol { list-style: decimal; }
+.md-body li { margin: 0.2rem 0; }
+.md-body blockquote {
+  border-inline-start: 3px solid var(--accent);
+  padding-inline-start: 0.8rem;
+  color: var(--muted);
+  margin: 0.6rem 0;
+}
+.md-body code {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 0.35rem;
+  padding: 0.08rem 0.35rem;
+  font-size: 0.85em;
+}
+.md-body a { color: var(--accent); text-decoration: underline; }
+.md-body hr { border-color: var(--line); margin: 0.9rem 0; }
+.md-cite {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  margin: 0 0.12rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  vertical-align: super;
+}
+
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }

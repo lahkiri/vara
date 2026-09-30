@@ -1,0 +1,16 @@
+# Node
+node_modules/
+dist/
+*.log
+
+# Rust
+src-tauri/target/
+crates/vara-core/target/
+target/
+
+# Tauri generated
+src-tauri/gen/schemas/
+
+# OS
+.DS_Store
+Thumbs.db

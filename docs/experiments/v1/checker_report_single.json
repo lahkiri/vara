@@ -1,0 +1,91 @@
+{
+  "verdict": "FAIL",
+  "rule": "كل رابط في التقرير ∈ المسترجَع + كل مرجع [n] يقابل مدخلاً في قائمة المصادر",
+  "metrics": {
+    "cited_total": 13,
+    "retrieved_total": 4,
+    "backed_ratio": 0.308
+  },
+  "cited_not_retrieved": [
+    "huggingface.co/blog/llm-tool-use",
+    "arxiv.org/abs/2308.11432",
+    "sciencedirect.com/science/article/pii/SS0169260723001234",
+    "ieeexplore.ieee.org/document/1234567",
+    "lmstudio.ai",
+    "ollama.ai",
+    "github.com/petercat-ai/LocalGPT",
+    "forrester.com/report/The+Future+Of+AI+And+Edge+Computing+-+Full+Report/RES194428",
+    "gartner.com/en/information-technology/insights/future-of-ai"
+  ],
+  "retrieved_not_cited": [],
+  "unresolved_refs": [],
+  "sections": [
+    {
+      "title": "Mode A — Single Agent (baseline)",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "التقرير المرجعي: الواقع الفعلي لاستخدام النماذج اللغوية الصغيرة والمتوسطة المحلية في بناء وكلاء AI ذاتيين",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "مقدمة",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    },
+    {
+      "title": "1) قدرة النماذج المحلية الحالية",
+      "citations": 3,
+      "backed_citations": 3,
+      "effectively_uncovered": false,
+      "no_citations": false
+    },
+    {
+      "title": "2) موثوقية استدعاء الأدوات (Tool Calling)",
+      "citations": 2,
+      "backed_citations": 1,
+      "effectively_uncovered": false,
+      "no_citations": false
+    },
+    {
+      "title": "3) القيود العملية للأجهزة",
+      "citations": 3,
+      "backed_citations": 0,
+      "effectively_uncovered": true,
+      "no_citations": false
+    },
+    {
+      "title": "4) الأطر والمشاريع البرمجية البارزة لبناء وكلاء محليين",
+      "citations": 3,
+      "backed_citations": 0,
+      "effectively_uncovered": true,
+      "no_citations": false
+    },
+    {
+      "title": "5) اتجاهات السوق الأخيرة",
+      "citations": 2,
+      "backed_citations": 0,
+      "effectively_uncovered": true,
+      "no_citations": false
+    },
+    {
+      "title": "الخلاصة",
+      "citations": 0,
+      "backed_citations": 0,
+      "effectively_uncovered": false,
+      "no_citations": true
+    }
+  ],
+  "checks": {
+    "C1_all_cited_in_retrieved": false,
+    "C2_refs_resolve_to_source_list": true
+  }
+}
