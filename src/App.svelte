@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { app, boot, initEvents } from "./lib/state.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
+  import ChatView from "./lib/components/ChatView.svelte";
   import Dashboard from "./lib/components/Dashboard.svelte";
   import MissionView from "./lib/components/MissionView.svelte";
   import MemoryView from "./lib/components/MemoryView.svelte";
@@ -24,22 +25,28 @@
 {:else}
   <div class="flex h-screen overflow-hidden">
     <Sidebar />
-    <main class="flex-1 overflow-y-auto">
-      <div class="max-w-5xl mx-auto px-6 py-6">
-        {#if app.view === "dashboard"}
-          <Dashboard />
-        {:else if app.view === "missions"}
-          <MissionView />
-        {:else if app.view === "memory"}
-          <MemoryView />
-        {:else if app.view === "reports"}
-          <ReportsView />
-        {:else if app.view === "activity"}
-          <ActivityView />
-        {:else if app.view === "settings"}
-          <SettingsView />
-        {/if}
-      </div>
+    <main class="flex-1 overflow-hidden">
+      {#if app.view === "chat"}
+        <ChatView />
+      {:else}
+        <div class="h-full overflow-y-auto">
+          <div class="max-w-5xl mx-auto px-6 py-6">
+            {#if app.view === "dashboard"}
+              <Dashboard />
+            {:else if app.view === "missions"}
+              <MissionView />
+            {:else if app.view === "memory"}
+              <MemoryView />
+            {:else if app.view === "reports"}
+              <ReportsView />
+            {:else if app.view === "activity"}
+              <ActivityView />
+            {:else if app.view === "settings"}
+              <SettingsView />
+            {/if}
+          </div>
+        </div>
+      {/if}
     </main>
   </div>
 {/if}

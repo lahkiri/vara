@@ -18,10 +18,40 @@
 html,
 body {
   height: 100%;
-  background: var(--bg);
+  background-color: var(--bg);
   color: var(--text);
   font-family: "Segoe UI", Tahoma, system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Living background: two persona-colored auroras + a deep vertical wash.
+   They breathe slowly and re-tint themselves when the persona changes. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  background:
+    radial-gradient(1100px 760px at 88% -12%, var(--accent-soft), transparent 62%),
+    radial-gradient(900px 680px at -8% 108%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 60%),
+    linear-gradient(180deg, var(--bg) 0%, color-mix(in srgb, var(--bg) 82%, #000) 100%);
+  animation: aurora-drift 26s ease-in-out infinite alternate;
+}
+
+/* Fine film grain so large dark surfaces never feel flat */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+}
+
+@keyframes aurora-drift {
+  0% { filter: hue-rotate(0deg) brightness(1); transform: translateY(0); }
+  100% { filter: hue-rotate(14deg) brightness(1.08); transform: translateY(-14px); }
 }
 
 /* Persona accents — switched from JS when the style changes */
@@ -32,21 +62,23 @@ body {
 [data-persona="nature"]  { --accent: #34d399; --accent-soft: rgba(52, 211, 153, 0.13); }
 
 .card {
-  background: var(--card);
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018));
   border: 1px solid var(--line);
   border-radius: 1rem;
-  backdrop-filter: blur(8px);
+  box-shadow: 0 14px 34px -22px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  backdrop-filter: blur(14px);
 }
 
 .btn {
-  background: var(--accent);
+  background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 72%, #ffffff 14%));
   color: #0b0e1a;
   font-weight: 700;
   border-radius: 0.75rem;
   padding: 0.55rem 1.1rem;
-  transition: filter 0.15s ease, transform 0.05s ease;
+  box-shadow: 0 10px 26px -12px var(--accent-soft), 0 1px 0 rgba(255, 255, 255, 0.25) inset;
+  transition: filter 0.15s ease, transform 0.05s ease, box-shadow 0.2s ease;
 }
-.btn:hover { filter: brightness(1.1); }
+.btn:hover { filter: brightness(1.08); box-shadow: 0 14px 32px -12px var(--accent-soft); }
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
@@ -56,9 +88,9 @@ body {
   border: 1px solid var(--line);
   border-radius: 0.75rem;
   padding: 0.5rem 1rem;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
-.btn-ghost:hover { background: var(--card-hover); }
+.btn-ghost:hover { background: var(--card-hover); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
 
 .input {
   width: 100%;
@@ -68,9 +100,9 @@ body {
   padding: 0.6rem 0.9rem;
   color: var(--text);
   outline: none;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.input:focus { border-color: var(--accent); }
+.input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .input::placeholder { color: var(--muted); }
 
 .chip {
@@ -84,6 +116,73 @@ body {
   color: var(--muted);
 }
 
+/* ---------- chat ---------- */
+
+.bubble {
+  max-width: min(72ch, 88%);
+  padding: 0.7rem 1rem;
+  border-radius: 1.1rem;
+  line-height: 1.7;
+  word-break: break-word;
+}
+.bubble-vara {
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.065), rgba(255, 255, 255, 0.025));
+  border: 1px solid var(--line);
+  border-start-start-radius: 0.3rem;
+  box-shadow: 0 10px 26px -20px rgba(0, 0, 0, 0.7);
+}
+.bubble-user {
+  background: color-mix(in srgb, var(--accent) 20%, rgba(255, 255, 255, 0.03));
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  border-start-end-radius: 0.3rem;
+}
+.bubble-error {
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+  background: color-mix(in srgb, var(--bad) 10%, rgba(255, 255, 255, 0.02));
+}
+
+/* streaming caret */
+.caret {
+  display: inline-block;
+  width: 0.5ch;
+  height: 1.05em;
+  margin-inline-start: 2px;
+  vertical-align: -0.15em;
+  background: var(--accent);
+  border-radius: 1px;
+  animation: caret-blink 0.9s steps(1) infinite;
+}
+@keyframes caret-blink { 50% { opacity: 0; } }
+
+/* thinking dots */
+.typing {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  padding: 0.45rem 0.2rem;
+}
+.typing i {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--muted);
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+.typing i:nth-child(2) { animation-delay: 0.15s; }
+.typing i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* the companion's halo */
+.avatar-ring {
+  box-shadow:
+    0 0 0 1px var(--line),
+    0 0 34px -6px var(--accent-soft),
+    0 0 90px -18px var(--accent-soft);
+}
+
 @keyframes pulse-glow {
   0%, 100% { box-shadow: 0 0 24px 2px var(--accent-soft); }
   50% { box-shadow: 0 0 44px 8px var(--accent-soft); }
@@ -95,6 +194,21 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 .fade-up { animation: fade-up 0.25s ease both; }
+
+/* nav glow for the active item */
+.nav-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* mission proposal card inside chat */
+.mission-proposal {
+  border: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 0.9rem;
+}
 
 .md-body { line-height: 1.75; }
 .md-body h1 { font-size: 1.4rem; font-weight: 800; margin: 1.1rem 0 0.5rem; }
@@ -136,4 +250,5 @@ body {
 
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); }
 ::-webkit-scrollbar-track { background: transparent; }

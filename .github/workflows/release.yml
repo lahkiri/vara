@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build Windows installer
+    name: Build Windows installer + OTA artifacts
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,14 +27,16 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build and upload to the draft release
+      - name: Build, sign and upload to the draft release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
           releaseName: 'Vara v__VERSION__'
-          releaseBody: 'See the assets below to download and install Vara. The installer is for Windows x64.'
+          releaseBody: 'See the assets below to download and install Vara. The installer is for Windows x64. Existing users receive the update automatically through the built-in over-the-air updater.'
           releaseDraft: true
           prerelease: false
-          includeUpdaterJson: false
+          includeUpdaterJson: true

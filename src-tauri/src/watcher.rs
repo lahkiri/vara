@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
-use vara_core::types::Settings;
 use vara_core::{EntityEvent, EventSink};
 
 pub fn start(app: &AppHandle, path: std::path::PathBuf) -> Result<(), String> {

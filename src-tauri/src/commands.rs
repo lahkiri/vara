@@ -373,3 +373,338 @@ pub fn sys_open(state: State<'_, AppState>, target: String) -> Result<(), String
 pub fn show_window(app: AppHandle) {
     tray::show_main(&app);
 }
+
+// ---------- chat (talk with the entity) ----------
+
+#[derive(serde::Serialize)]
+pub struct SendChatStart {
+    pub conversation_id: i64,
+    pub user_message_id: i64,
+    pub assistant_message_id: i64,
+}
+
+fn estimate_tokens(s: &str) -> i64 {
+    (s.chars().count() as i64 / 4).max(1)
+}
+
+#[tauri::command]
+pub fn create_conversation(
+    state: State<'_, AppState>,
+    title: Option<String>,
+    mission_id: Option<i64>,
+) -> Result<Conversation, String> {
+    let t = title.unwrap_or_default();
+    let id = state
+        .db
+        .create_conversation(if t.trim().is_empty() { "" } else { &t }, mission_id)
+        .map_err(|e| e.to_string())?;
+    state.db.get_conversation(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_conversations(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<Conversation>, String> {
+    state
+        .db
+        .list_conversations(limit.unwrap_or(80))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_conversation(
+    state: State<'_, AppState>,
+    id: i64,
+    title: String,
+) -> Result<(), String> {
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("empty title".into());
+    }
+    state
+        .db
+        .rename_conversation(id, &title)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_conversation(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    // also drop any cancel flag for a stream that may still be running
+    state
+        .chat_cancels
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&id);
+    state.db.delete_conversation(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_messages(
+    state: State<'_, AppState>,
+    conversation_id: i64,
+    limit: Option<i64>,
+) -> Result<Vec<ChatMessageRecord>, String> {
+    state
+        .db
+        .list_chat_messages(conversation_id, limit.unwrap_or(300))
+        .map_err(|e| e.to_string())
+}
+
+/// Opens a conversation grounded in a report — the "follow up on the findings"
+/// entry point from Missions/Reports views. Follow-up messages now continue
+/// the thread with the full report in context.
+#[tauri::command]
+pub fn start_report_discussion(
+    state: State<'_, AppState>,
+    report_id: i64,
+) -> Result<Conversation, String> {
+    let report = state.db.get_report(report_id).map_err(|e| e.to_string())?;
+    let goal = state
+        .db
+        .get_mission(report.mission_id)
+        .map(|m| m.goal)
+        .unwrap_or_else(|_| "mission".into());
+    let title = format!(
+        "مناقشة التقرير #{report_id} — {}",
+        goal.chars().take(40).collect::<String>()
+    );
+    let id = state
+        .db
+        .create_conversation(&title, Some(report.mission_id))
+        .map_err(|e| e.to_string())?;
+    state.db.get_conversation(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn send_chat(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    conversation_id: i64,
+    content: String,
+) -> Result<SendChatStart, String> {
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err("the message is empty".into());
+    }
+    let snapshot = state.settings_snapshot();
+    if snapshot.provider.base_url.trim().is_empty() {
+        return Err("no model provider configured — open Settings first".into());
+    }
+    // one stream per conversation; other conversations can chat in parallel
+    {
+        let map = state.chat_cancels.lock().unwrap_or_else(|p| p.into_inner());
+        if map.contains_key(&conversation_id) {
+            return Err("Vara is still writing in this conversation".into());
+        }
+    }
+    let conversation = state
+        .db
+        .get_conversation(conversation_id)
+        .map_err(|e| e.to_string())?;
+
+    // store the user's message first (history already contains it when the
+    // context is built), then auto-title the thread from the first message
+    let user_id = state
+        .db
+        .insert_chat_message(
+            conversation_id,
+            "user",
+            &content,
+            None,
+            estimate_tokens(&content),
+            "ok",
+        )
+        .map_err(|e| e.to_string())?;
+    if conversation.title.trim().is_empty() {
+        let title: String = content.chars().take(48).collect();
+        let _ = state.db.rename_conversation(conversation_id, &title);
+    }
+
+    // placeholder assistant message that streams into
+    let assistant_id = state
+        .db
+        .insert_chat_message(conversation_id, "assistant", "", None, 0, "streaming")
+        .map_err(|e| e.to_string())?;
+
+    let llm = LlmClient::new(&snapshot.provider).map_err(|e| e.to_string())?;
+    let msgs = vara_core::build_context(&state.db, &conversation, &snapshot, &content)
+        .map_err(|e| e.to_string())?;
+
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    state
+        .chat_cancels
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(conversation_id, cancel.clone());
+
+    let db = state.db.clone();
+    let app2 = app.clone();
+    let cancel2 = cancel.clone();
+
+    tauri::async_runtime::spawn(async move {
+        let mut acc = String::new();
+        let emit_app = app2.clone();
+        let result = llm
+            .chat_stream(&msgs, None, cancel2, |delta| {
+                acc.push_str(delta);
+                let _ = emit_app.emit(
+                    "entity://chat/delta",
+                    serde_json::json!({
+                        "conversation_id": conversation_id,
+                        "message_id": assistant_id,
+                        "delta": delta,
+                    }),
+                );
+            })
+            .await;
+
+        let stopped = cancel.load(Ordering::SeqCst);
+        // remove the stream handle before emitting the terminal event
+        let _ = app2.try_state::<AppState>().map(|st| {
+            st.chat_cancels
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&conversation_id)
+        });
+
+        match result {
+            Ok(reply) => {
+                // keep the raw markers in storage so the proposal survives reloads
+                let status = if stopped { "stopped" } else { "ok" };
+                let tokens = (reply.prompt_tokens + reply.completion_tokens) as i64;
+                let _ = db.update_chat_message(
+                    assistant_id,
+                    &reply.content,
+                    tokens,
+                    Some(&reply.model),
+                    status,
+                );
+                let (clean, goal) = vara_core::extract_mission_proposal(&reply.content);
+                let _ = app2.emit(
+                    "entity://chat/done",
+                    serde_json::json!({
+                        "conversation_id": conversation_id,
+                        "message_id": assistant_id,
+                        "content": clean,
+                        "tokens": tokens,
+                        "model": reply.model,
+                        "status": status,
+                        "mission_goal": goal,
+                        "error": null,
+                    }),
+                );
+            }
+            Err(e) => {
+                let msg = if stopped {
+                    // user stopped early — keep whatever streamed in
+                    let _ = db.update_chat_message(
+                        assistant_id,
+                        &acc,
+                        estimate_tokens(&acc),
+                        None,
+                        "stopped",
+                    );
+                    let _ = app2.emit(
+                        "entity://chat/done",
+                        serde_json::json!({
+                            "conversation_id": conversation_id,
+                            "message_id": assistant_id,
+                            "content": acc,
+                            "tokens": 0,
+                            "model": null,
+                            "status": "stopped",
+                            "mission_goal": null,
+                            "error": null,
+                        }),
+                    );
+                    return;
+                } else {
+                    format!("{e}")
+                };
+                let _ = db.update_chat_message(assistant_id, &msg, 0, None, "error");
+                let _ = app2.emit(
+                    "entity://chat/done",
+                    serde_json::json!({
+                        "conversation_id": conversation_id,
+                        "message_id": assistant_id,
+                        "content": msg,
+                        "tokens": 0,
+                        "model": null,
+                        "status": "error",
+                        "mission_goal": null,
+                        "error": msg,
+                    }),
+                );
+            }
+        }
+    });
+
+    Ok(SendChatStart {
+        conversation_id,
+        user_message_id: user_id,
+        assistant_message_id: assistant_id,
+    })
+}
+
+#[tauri::command]
+pub fn stop_chat(state: State<'_, AppState>, conversation_id: i64) -> Result<(), String> {
+    if let Some(c) = state
+        .chat_cancels
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&conversation_id)
+    {
+        c.store(true, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+// ---------- updates (over-the-air) ----------
+
+#[derive(serde::Serialize)]
+pub struct UpdateInfo {
+    pub version: String,
+    pub current_version: String,
+    pub notes: String,
+}
+
+#[tauri::command]
+pub async fn check_for_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(u) => Ok(Some(UpdateInfo {
+            version: u.version.clone(),
+            current_version: u.current_version.clone(),
+            notes: u.body.clone().unwrap_or_default(),
+        })),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
+        return Ok(());
+    };
+    let progress_app = app.clone();
+    let mut downloaded: u64 = 0;
+    update
+        .download_and_install(
+            move |chunk, total| {
+                downloaded += chunk as u64;
+                let _ = progress_app.emit(
+                    "entity://update/progress",
+                    serde_json::json!({ "downloaded": downloaded, "total": total }),
+                );
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    notify_user(&app, "Vara", "Update installed — restarting now.");
+    app.restart(); // never returns
+}

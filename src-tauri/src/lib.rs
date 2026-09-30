@@ -6,6 +6,7 @@ mod settings;
 mod tray;
 mod watcher;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
@@ -20,6 +21,8 @@ pub struct AppState {
     pub cancel: Arc<AtomicBool>,
     pub busy: Arc<AtomicBool>,
     pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    /// Per-conversation stop flags for streaming chat replies.
+    pub chat_cancels: Mutex<HashMap<i64, Arc<AtomicBool>>>,
 }
 
 impl AppState {
@@ -71,6 +74,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::get_bootstrap,
             commands::save_settings,
@@ -90,6 +94,16 @@ pub fn run() {
             commands::sys_open,
             commands::export_report,
             commands::show_window,
+            commands::create_conversation,
+            commands::list_conversations,
+            commands::rename_conversation,
+            commands::delete_conversation,
+            commands::get_messages,
+            commands::start_report_discussion,
+            commands::send_chat,
+            commands::stop_chat,
+            commands::check_for_update,
+            commands::install_update,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -111,6 +125,7 @@ pub fn run() {
                 cancel: Arc::new(AtomicBool::new(false)),
                 busy: Arc::new(AtomicBool::new(false)),
                 watcher: Mutex::new(None),
+                chat_cancels: Mutex::new(HashMap::new()),
             });
 
             tray::create(&handle).map_err(|e| e.to_string())?;

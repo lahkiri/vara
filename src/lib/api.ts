@@ -1,9 +1,33 @@
-// Typed invoke wrappers over the Tauri commands.
+// Typed invoke wrappers over the Tauri commands — with a browser mock so the
+// UI can be developed (and visually verified) outside the desktop shell.
 
 import { invoke } from "@tauri-apps/api/core";
-import type { Settings, Mission, Note, ReportRecord, EventRecord, ProviderConfig } from "./types";
+import type {
+  Settings,
+  Mission,
+  Note,
+  ReportRecord,
+  EventRecord,
+  ProviderConfig,
+  Conversation,
+  ChatMessageRecord,
+  SendChatStart,
+  UpdateInfo,
+} from "./types";
+import { mockApi } from "./mock";
 
-export type { Settings, Mission, Note, ReportRecord, EventRecord, ProviderConfig };
+export type {
+  Settings,
+  Mission,
+  Note,
+  ReportRecord,
+  EventRecord,
+  ProviderConfig,
+  Conversation,
+  ChatMessageRecord,
+  SendChatStart,
+  UpdateInfo,
+};
 
 export interface Stats {
   missions_total: number;
@@ -57,7 +81,7 @@ export interface ProvenanceResult {
   checks: { c1_all_cited_in_retrieved: boolean; c2_refs_resolve_to_source_list: boolean };
 }
 
-export const api = {
+const realApi = {
   bootstrap: () => invoke<Bootstrap>("get_bootstrap"),
   status: () => invoke<EntityStatus>("get_entity_status"),
   saveSettings: (s: Settings) => invoke<void>("save_settings", { newSettings: s }),
@@ -77,7 +101,34 @@ export const api = {
   sysOpen: (target: string) => invoke<void>("sys_open", { target }),
   exportReport: (id: number) => invoke<string>("export_report", { id }),
   showWindow: () => invoke<void>("show_window"),
+
+  // chat
+  createConversation: (title: string | null, missionId: number | null) =>
+    invoke<Conversation>("create_conversation", { title, missionId }),
+  conversations: (limit = 80) => invoke<Conversation[]>("list_conversations", { limit }),
+  renameConversation: (id: number, title: string) => invoke<void>("rename_conversation", { id, title }),
+  deleteConversation: (id: number) => invoke<void>("delete_conversation", { id }),
+  messages: (conversationId: number, limit = 300) =>
+    invoke<ChatMessageRecord[]>("get_messages", { conversationId, limit }),
+  startReportDiscussion: (reportId: number) =>
+    invoke<Conversation>("start_report_discussion", { reportId }),
+  sendChat: (conversationId: number, content: string) =>
+    invoke<SendChatStart>("send_chat", { conversationId, content }),
+  stopChat: (conversationId: number) => invoke<void>("stop_chat", { conversationId }),
+
+  // updates
+  checkForUpdate: () => invoke<UpdateInfo | null>("check_for_update"),
+  installUpdate: () => invoke<void>("install_update"),
 };
+
+export type Api = typeof realApi;
+
+/// True when running inside the Tauri webview (false in a plain browser).
+export function isTauri(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+export const api: Api = isTauri() ? realApi : (mockApi as unknown as Api);
 
 // Entity event stream payloads (tagged union via `type` field).
 export type EntityEvent =
@@ -85,3 +136,9 @@ export type EntityEvent =
   | { type: "activity"; kind: string; message: string; mission_id: number | null }
   | { type: "mission_update"; id: number; status: string; steps_done: number; max_steps: number; spent_tokens: number }
   | { type: "report_ready"; id: number; mission_id: number; verdict: string; backed_ratio: number };
+
+export interface ChatDeltaPayload {
+  conversation_id: number;
+  message_id: number;
+  delta: string;
+}

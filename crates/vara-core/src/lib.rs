@@ -4,6 +4,7 @@
 //! unit-tested headlessly (see `tests/`). The Tauri shell (`src-tauri`)
 //! wires this into a desktop app: tray, window, notifications, events.
 
+pub mod chat;
 pub mod db;
 pub mod dedup;
 pub mod entity;
@@ -12,6 +13,7 @@ pub mod provenance;
 pub mod tools;
 pub mod types;
 
+pub use chat::{build_context, extract_mission_proposal, persona_flavor};
 pub use db::Database;
 pub use entity::{EntityEvent, EntityRuntime, EventSink, MissionInputs, MissionOutcome};
 pub use llm::LlmClient;

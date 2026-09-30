@@ -74,3 +74,47 @@ export interface EventRecord {
   kind: string;
   message: string;
 }
+
+// ---------- Conversations (chat with the entity) ----------
+
+export interface Conversation {
+  id: number;
+  created_at: string;
+  updated_at: string;
+  title: string;
+  mission_id: number | null;
+}
+
+export interface ChatMessageRecord {
+  id: number;
+  conversation_id: number;
+  role: string; // "user" | "assistant"
+  content: string;
+  model: string | null;
+  tokens: number;
+  status: string; // "streaming" | "ok" | "stopped" | "error"
+  created_at: string;
+}
+
+export interface SendChatStart {
+  conversation_id: number;
+  user_message_id: number;
+  assistant_message_id: number;
+}
+
+export interface ChatDonePayload {
+  conversation_id: number;
+  message_id: number;
+  content: string;
+  tokens: number;
+  model: string | null;
+  status: string;
+  mission_goal: string | null;
+  error: string | null;
+}
+
+export interface UpdateInfo {
+  version: string;
+  current_version: string;
+  notes: string;
+}

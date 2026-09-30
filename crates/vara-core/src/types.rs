@@ -177,6 +177,39 @@ impl ChatMessage {
             content: content.into(),
         }
     }
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: "assistant".into(),
+            content: content.into(),
+        }
+    }
+}
+
+// ---------- Conversations (chat with the entity) ----------
+
+/// One conversation thread with Vara — the unit of continuity.
+#[derive(Debug, Clone, Serialize)]
+pub struct Conversation {
+    pub id: i64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub title: String,
+    /// When this thread was opened from a mission/report, the link lives here
+    /// so every reply is grounded in that report.
+    pub mission_id: Option<i64>,
+}
+
+/// One stored chat message (user or assistant side).
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatMessageRecord {
+    pub id: i64,
+    pub conversation_id: i64,
+    pub role: String, // "user" | "assistant"
+    pub content: String,
+    pub model: Option<String>,
+    pub tokens: i64,
+    pub status: String, // "streaming" | "ok" | "stopped" | "error"
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

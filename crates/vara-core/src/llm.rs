@@ -4,6 +4,9 @@
 
 use crate::types::{ChatMessage, LlmReply, ProviderConfig};
 use crate::{Result, VaraError};
+use futures_util::StreamExt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 pub struct LlmClient {
@@ -107,6 +110,125 @@ impl LlmClient {
             .chat(&[ChatMessage::user("Reply with exactly: OK")], Some(8))
             .await?;
         Ok((reply.content.trim().to_string(), t0.elapsed().as_millis()))
+    }
+
+    /// Streaming chat completion (SSE). Every text chunk is handed to
+    /// `on_delta` the moment it arrives; the aggregate is returned at the end.
+    /// Providers that ignore `stream:true` and answer with one JSON body are
+    /// handled by the fallback parser, so the UI never breaks either way.
+    /// `cancel` aborts mid-stream — whatever was generated so far is kept.
+    pub async fn chat_stream(
+        &self,
+        messages: &[ChatMessage],
+        max_tokens: Option<u32>,
+        cancel: Arc<AtomicBool>,
+        mut on_delta: impl FnMut(&str),
+    ) -> Result<LlmReply> {
+        let url = format!("{}/chat/completions", self.base_url);
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "stream": true
+        });
+        if let Some(mt) = max_tokens {
+            body["max_tokens"] = serde_json::json!(mt);
+        }
+        let mut req = self
+            .http
+            .post(&url)
+            .json(&body)
+            .timeout(Duration::from_secs(600));
+        let key = self.api_key.trim();
+        if !key.is_empty() {
+            req = req.bearer_auth(key);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| VaraError::Llm(format!("request failed: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let snippet: String = text.chars().take(300).collect();
+            return Err(VaraError::Llm(format!("HTTP {status}: {snippet}")));
+        }
+
+        let mut raw = String::new();
+        let mut content = String::new();
+        let mut model = self.model.clone();
+        let (mut ptok, mut ctok) = (0u64, 0u64);
+        let mut saw_sse = false;
+
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            if cancel.load(Ordering::SeqCst) {
+                break; // owner pressed stop — keep the partial answer
+            }
+            let chunk = chunk.map_err(|e| VaraError::Llm(format!("stream: {e}")))?;
+            let piece = String::from_utf8_lossy(&chunk);
+            raw.push_str(&piece);
+            for line in piece.split('\n') {
+                let Some(data) = line.trim().strip_prefix("data:") else {
+                    continue;
+                };
+                saw_sse = true;
+                let data = data.trim();
+                if data == "[DONE]" || data.is_empty() {
+                    continue;
+                }
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                    if let Some(err) = v["error"]["message"].as_str() {
+                        return Err(VaraError::Llm(err.to_string()));
+                    }
+                    if let Some(d) = v["choices"][0]["delta"]["content"].as_str() {
+                        if !d.is_empty() {
+                            content.push_str(d);
+                            on_delta(d);
+                        }
+                    }
+                    if let Some(m) = v["model"].as_str() {
+                        model = m.to_string();
+                    }
+                    if let Some(p) = v["usage"]["prompt_tokens"].as_u64() {
+                        ptok = p;
+                    }
+                    if let Some(c) = v["usage"]["completion_tokens"].as_u64() {
+                        ctok = c;
+                    }
+                }
+            }
+        }
+
+        // Fallback: provider answered with one plain JSON body instead of SSE.
+        if !saw_sse && content.is_empty() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw.trim()) {
+                if let Some(c) = v["choices"][0]["message"]["content"].as_str() {
+                    content = c.trim().to_string();
+                    if !content.is_empty() {
+                        on_delta(&content);
+                    }
+                }
+                if let Some(m) = v["model"].as_str() {
+                    model = m.to_string();
+                }
+                ptok = v["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
+                ctok = v["usage"]["completion_tokens"].as_u64().unwrap_or(0);
+            }
+        }
+
+        if content.is_empty() {
+            return Err(VaraError::Llm(
+                "empty completion from provider (no streamed content)".into(),
+            ));
+        }
+        let model_name = model;
+        Ok(LlmReply {
+            content,
+            model: model_name,
+            prompt_tokens: ptok,
+            completion_tokens: ctok,
+        })
     }
 }
 

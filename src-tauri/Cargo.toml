@@ -1,6 +1,6 @@
 [package]
 name = "vara"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Vara — a persistent autonomous entity on your desktop"
 license = "MIT"
@@ -18,6 +18,7 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"
 vara-core = { path = "../crates/vara-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

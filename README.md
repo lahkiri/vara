@@ -42,10 +42,13 @@ v2 design with frozen decision thresholds.
 
 | | |
 |---|---|
+| 💬 **A companion, not a form** | Chat with Vara in persistent conversations: follow-up messages, streaming replies, and answers grounded in her actual memory (FTS-matched notes) — the Dot/Muse-style continuity, on your desktop |
+| ✦ **From talk to action** | When a request needs real research, Vara proposes a mission from inside the chat — one click turns it into a fully-gated research run. And any report has a **“Discuss report”** button that opens a follow-up thread with the report in context |
 | 🧠 **Persistent entity** | Missions, memory (SQLite WAL + FTS5), reflections, event log — all in one portable data folder |
 | 🛡 **Provenance gate** | Structural citation check (C1: cited ∈ retrieved · C2: refs resolve) on every report, with an automatic repair pass |
 | 🌐 **Bring any model** | OpenAI-compatible protocol: Z.ai, OpenAI, Ollama, LM Studio, llama-server, vLLM… |
 | 🔎 **Honest research loop** | Plan → search/fetch → live replanning → clean-context writer → checker → repair → report |
+| 🛰 **Over-the-air updates** | The app checks GitHub releases on every launch and installs new versions with one click — signed updates, no manual reinstalling |
 | 🖥 **Lives with your system** | System tray, close-to-tray, notifications, optional autostart, watched-folder indexing (`file://` provenance) |
 | 🎭 **8 states, 5 styles** | Happy / Focused / Thinking / Excited / Serious / Working / Planning / On Mission — Classic / Dark / Stealth / Tech / Nature |
 | 🌍 **AR + EN** | Full RTL/LTR interface switching |
@@ -70,23 +73,24 @@ npm run tauri build    # produce the installer
 
 1. Open **Settings → Model provider**, pick a preset (Z.ai / OpenAI / Ollama / LM Studio / llama-server), paste base URL + key + model.
 2. Click **Test connection**.
-3. On the Dashboard, give Vara a mission and a token budget. Watch the live
-   "Vara is working…" checklist.
-4. When the report lands, open it: the **provenance badge** (PASS/FAIL + backed %)
-   is computed by the same checker that caught the v1 fabrication.
+3. Go to **Chat** and just talk — that is the heart of the app. Ask “who are you?” or anything else; Vara replies with streaming answers grounded in her memory and keeps the thread for follow-ups.
+4. Ask for research (or press **Turn into a mission** on a proposal): Vara plans, searches, and writes a report that passes the **provenance badge** gate (PASS/FAIL + backed %).
+5. Press **Discuss report** to open a follow-up conversation with the report attached — dig into the findings without leaving the chat.
 
 ## Architecture
 
 ```
 ┌────────────────────────── desktop app (Tauri 2) ──────────────────────────┐
 │  Svelte 5 + Tailwind 4            Rust shell: tray, notifications,        │
-│  AR/EN · live checklist           single-instance, autostart, watcher     │
+│  AR/EN · chat-first UI            single-instance, autostart, watcher,    │
+│  streaming bubbles                OTA updater (signed)                    │
 │        │ events │ commands                │                               │
 │        ▼                                  ▼                               │
 │  ┌──────────────────────── vara-core (pure logic) ─────────────────────┐  │
 │  │ entity.rs  state machine · mission runner · budget · replan         │  │
+│  │ chat.rs    identity · persona flavors · memory grounding · proposal │  │
 │  │ provenance.rs  C1/C2 citation gate  (regression-tested vs v1 data)  │  │
-│  │ db.rs  SQLite WAL · FTS5-with-fallback · notes/sources/reports      │  │
+│  │ db.rs  SQLite WAL · FTS5-with-fallback · notes/sources/conversations│  │
 │  │ tools.rs  web search + page fetch (html→text)   llm.rs  any model   │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────────────┘

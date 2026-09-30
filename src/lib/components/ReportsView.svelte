@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { t } from "../i18n.svelte";
+  import { loadConversations, openConversation, app } from "../state.svelte";
   import { api, type ProvenanceResult } from "../api";
   import type { ReportRecord } from "../types";
   import { mdToHtml } from "../md";
@@ -30,6 +31,14 @@
 
   function html(md: string): string {
     return mdToHtml(md);
+  }
+
+  async function discuss(r: ReportRecord) {
+    const conv = await api.startReportDiscussion(r.id).catch(() => null);
+    if (!conv) return;
+    await loadConversations();
+    await openConversation(conv.id);
+    app.view = "chat";
   }
 
   function check(r: ReportRecord): ProvenanceResult | null {
@@ -78,6 +87,7 @@
       <div class="flex items-center gap-3 flex-wrap mb-3">
         <ProvenanceBadge verdict={selected.verdict} ratio={selected.backed_ratio} cited={selected.check_json?.metrics.cited_total ?? 0} />
         <span class="chip">#{selected.id}</span>
+        <button class="btn text-xs" onclick={() => discuss(selected!)}>✷ {t("discuss_report")}</button>
         <button class="btn-ghost text-xs ms-auto" onclick={exportReport}>{t("export_report")}</button>
       </div>
       {#if exportedPath}

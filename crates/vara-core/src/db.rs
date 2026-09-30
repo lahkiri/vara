@@ -14,7 +14,9 @@ pub struct Database {
     fts: bool,
 }
 
-const MIGRATIONS: &[&str] = &[/* v1 */ r#"
+const MIGRATIONS: &[&str] = &[
+    /* v1 */
+    r#"
     CREATE TABLE IF NOT EXISTS notes(
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -72,7 +74,30 @@ const MIGRATIONS: &[&str] = &[/* v1 */ r#"
       kind TEXT NOT NULL,
       message TEXT NOT NULL DEFAULT ''
     );
-    "#];
+    "#,
+    /* v2 — conversations: the entity is a companion you talk with */
+    r#"
+    CREATE TABLE IF NOT EXISTS conversations(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      title TEXT NOT NULL DEFAULT '',
+      mission_id INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS messages(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      model TEXT,
+      tokens INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'ok',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, id);
+    CREATE INDEX IF NOT EXISTS idx_conversations_upd ON conversations(updated_at DESC);
+    "#,
+];
 
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
@@ -335,6 +360,62 @@ impl Database {
         ))?;
         let rows = stmt
             .query_map(params![q, limit.clamp(1, 200)], Self::note_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Memory search tuned for natural chat sentences: splits the text into
+    /// significant keywords and matches ANY of them (FTS OR-query, or a set of
+    /// LIKE clauses without FTS). Whole-sentence phrase matching almost never
+    /// hits real conversation text, so keywords are the honest approach.
+    pub fn search_notes_any(&self, text: &str, limit: i64) -> Result<Vec<Note>> {
+        let keywords = keywords_of(text);
+        if keywords.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn();
+        if self.fts {
+            let q = keywords
+                .iter()
+                .map(|k| format!("\"{}\"", k.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let sql = format!(
+                "SELECT n.id, n.created_at, n.kind, n.title, n.body, n.mission_id, n.source_url, n.source_title
+                 FROM notes_fts f JOIN notes n ON n.id = f.rowid
+                 WHERE notes_fts MATCH ?1 ORDER BY bm25(notes_fts) LIMIT ?2"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let mapped = stmt.query_map(params![q, limit.clamp(1, 200)], Self::note_from_row);
+            if let Ok(rows) = mapped {
+                if let Ok(v) = rows.collect::<std::result::Result<Vec<_>, _>>() {
+                    return Ok(v);
+                }
+            }
+            // fall through to LIKE on any FTS failure
+        }
+        let clauses = keywords
+            .iter()
+            .map(|_| "(n.title LIKE '%'||?||'%' OR n.body LIKE '%'||?||'%')")
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let sql = format!(
+            "SELECT {} FROM notes n WHERE {} ORDER BY n.id DESC LIMIT {}",
+            Self::NOTE_COLS,
+            clauses,
+            limit.clamp(1, 200)
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut bind_vals: Vec<String> = Vec::new();
+        for k in &keywords {
+            bind_vals.push(k.clone());
+            bind_vals.push(k.clone());
+        }
+        let rows = stmt
+            .query_map(
+                rusqlite::params_from_iter(bind_vals.iter()),
+                Self::note_from_row,
+            )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -623,6 +704,185 @@ impl Database {
         Ok(rows)
     }
 
+    // ---------- conversations (chat with the entity) ----------
+
+    pub fn create_conversation(&self, title: &str, mission_id: Option<i64>) -> Result<i64> {
+        self.conn().execute(
+            "INSERT INTO conversations(title, mission_id) VALUES (?1, ?2)",
+            params![title.trim(), mission_id],
+        )?;
+        Ok(self.conn().last_insert_rowid())
+    }
+
+    pub fn get_conversation(&self, id: i64) -> Result<Conversation> {
+        self.conn()
+            .query_row(
+                "SELECT id, created_at, updated_at, title, mission_id
+                 FROM conversations WHERE id = ?1",
+                params![id],
+                |r| {
+                    Ok(Conversation {
+                        id: r.get(0)?,
+                        created_at: r.get(1)?,
+                        updated_at: r.get(2)?,
+                        title: r.get(3)?,
+                        mission_id: r.get(4)?,
+                    })
+                },
+            )
+            .map_err(|e| VaraError::Other(format!("conversation {id}: {e}")))
+    }
+
+    pub fn list_conversations(&self, limit: i64) -> Result<Vec<Conversation>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, created_at, updated_at, title, mission_id
+             FROM conversations ORDER BY updated_at DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit.clamp(1, 200)], |r| {
+                Ok(Conversation {
+                    id: r.get(0)?,
+                    created_at: r.get(1)?,
+                    updated_at: r.get(2)?,
+                    title: r.get(3)?,
+                    mission_id: r.get(4)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn rename_conversation(&self, id: i64, title: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE conversations SET title = ?2, updated_at = datetime('now') WHERE id = ?1",
+            params![id, title.trim()],
+        )?;
+        Ok(())
+    }
+
+    pub fn touch_conversation(&self, id: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_conversation(&self, id: i64) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1",
+            params![id],
+        )?;
+        conn.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn insert_chat_message(
+        &self,
+        conversation_id: i64,
+        role: &str,
+        content: &str,
+        model: Option<&str>,
+        tokens: i64,
+        status: &str,
+    ) -> Result<i64> {
+        self.conn().execute(
+            "INSERT INTO messages(conversation_id, role, content, model, tokens, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![conversation_id, role, content, model, tokens, status],
+        )?;
+        let id = self.conn().last_insert_rowid();
+        self.touch_conversation(conversation_id)?;
+        Ok(id)
+    }
+
+    pub fn update_chat_message(
+        &self,
+        id: i64,
+        content: &str,
+        tokens: i64,
+        model: Option<&str>,
+        status: &str,
+    ) -> Result<()> {
+        self.conn().execute(
+            "UPDATE messages SET content = ?2, tokens = ?3, model = ?4, status = ?5 WHERE id = ?1",
+            params![id, content, tokens, model, status],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_chat_message(&self, id: i64) -> Result<ChatMessageRecord> {
+        self.conn()
+            .query_row(Self::MESSAGE_SQL_WHERE, params![id], Self::msg_from_row)
+            .map_err(|e| VaraError::Other(format!("message {id}: {e}")))
+    }
+
+    /// The last `limit` messages of a conversation, oldest first — ready to
+    /// feed straight into the model context.
+    pub fn list_chat_messages(
+        &self,
+        conversation_id: i64,
+        limit: i64,
+    ) -> Result<Vec<ChatMessageRecord>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT * FROM ({} ORDER BY id DESC LIMIT ?2) ORDER BY id ASC",
+            Self::MESSAGE_SQL
+        ))?;
+        let rows = stmt
+            .query_map(
+                params![conversation_id, limit.clamp(1, 200)],
+                Self::msg_from_row,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Recent assistant messages that proposed missions, for the sidebar
+    /// "suggestions" — kept simple: not exposed in v1 UI.
+    pub fn count_conversations(&self) -> Result<i64> {
+        Ok(self
+            .conn()
+            .query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))?)
+    }
+
+    const MESSAGE_SQL: &'static str =
+        "SELECT id, conversation_id, role, content, model, tokens, status, created_at
+         FROM messages WHERE conversation_id = ?1";
+
+    const MESSAGE_SQL_WHERE: &'static str =
+        "SELECT id, conversation_id, role, content, model, tokens, status, created_at
+         FROM messages WHERE id = ?1";
+
+    fn msg_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChatMessageRecord> {
+        Ok(ChatMessageRecord {
+            id: r.get(0)?,
+            conversation_id: r.get(1)?,
+            role: r.get(2)?,
+            content: r.get(3)?,
+            model: r.get(4)?,
+            tokens: r.get(5)?,
+            status: r.get(6)?,
+            created_at: r.get(7)?,
+        })
+    }
+
+    /// Latest report of a mission — used to ground "discuss this report" chats.
+    pub fn latest_report_for_mission(&self, mission_id: i64) -> Result<Option<ReportRecord>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, mission_id, created_at, markdown, sources_json, check_json,
+                    backed_ratio, verdict, repaired
+             FROM reports WHERE mission_id = ?1 ORDER BY id DESC LIMIT 1",
+        )?;
+        let mut rows = stmt
+            .query_map(params![mission_id], Self::report_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows.pop())
+    }
+
     // ---------- stats ----------
 
     pub fn stats(&self) -> Result<Stats> {
@@ -652,6 +912,27 @@ impl Database {
             avg_backed_ratio: avg_backed_ratio.map(|x| (x * 1000.0).round() / 1000.0),
         })
     }
+}
+
+/// Extracts significant keywords from a natural sentence (Arabic or Latin).
+/// Tokens shorter than 3 chars are dropped (Arabic particles, English "the"),
+/// edge punctuation is trimmed, at most 10 keywords are kept.
+pub fn keywords_of(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tok in text.split_whitespace() {
+        let trimmed = tok
+            .trim_matches(|c: char| {
+                c.is_ascii_punctuation() || matches!(c, '؟' | '،' | '؛' | '«' | '»' | '…' | 'ـ')
+            })
+            .to_lowercase();
+        if trimmed.chars().count() >= 3 && !out.contains(&trimmed) {
+            out.push(trimmed);
+        }
+        if out.len() >= 10 {
+            break;
+        }
+    }
+    out
 }
 
 #[cfg(test)]

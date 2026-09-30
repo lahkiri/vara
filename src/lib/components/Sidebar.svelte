@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { app } from "../state.svelte";
+  import { app, updater } from "../state.svelte";
   import { t, i18n, setLang } from "../i18n.svelte";
-  import { api } from "../api";
   import face from "../../assets/characters/face.png";
 
   const nav = [
+    { id: "chat", label: () => t("nav_chat"), icon: "✷" },
     { id: "dashboard", label: () => t("nav_dashboard"), icon: "◈" },
     { id: "missions", label: () => t("nav_missions"), icon: "◎" },
     { id: "memory", label: () => t("nav_memory"), icon: "❖" },
@@ -18,7 +18,7 @@
 
 <aside class="w-56 shrink-0 h-full border-e border-[var(--line)] bg-[var(--bg2)]/60 flex flex-col">
   <div class="px-5 pt-5 pb-4 flex items-center gap-3">
-    <img src={face} alt="Vara" class="w-11 h-11 rounded-xl" />
+    <img src={face} alt="Vara" class="w-11 h-11 rounded-xl avatar-ring" />
     <div>
       <div class="font-extrabold text-lg leading-none">Vara</div>
       <div class="text-[11px] text-[var(--muted)] mt-1">{t("app_motto")}</div>
@@ -29,7 +29,7 @@
     {#each nav as item (item.id)}
       <button
         class="text-start px-3 py-2 rounded-xl text-sm flex items-center gap-3 transition-colors
-          {app.view === item.id ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-bold' : 'text-[var(--muted)] hover:bg-[var(--card-hover)]'}"
+          {app.view === item.id ? 'nav-active' : 'text-[var(--muted)] hover:bg-[var(--card-hover)]'}"
         onclick={() => (app.view = item.id)}
       >
         <span class="opacity-80">{item.icon}</span>
@@ -47,6 +47,16 @@
       <span>{t("language")}</span>
       <span class="font-bold">{i18n.lang === "ar" ? "عربي" : "EN"}</span>
     </button>
+    {#if updater.available}
+      <button
+        class="card px-3 py-2 flex items-center gap-2 text-xs border-[var(--accent)]/50 text-[var(--accent)] w-full"
+        onclick={() => (app.view = "settings")}
+        title={t("update_available") + " — v" + updater.available.version}
+      >
+        <span class="w-2 h-2 rounded-full bg-[var(--accent)] pulse inline-block"></span>
+        <span class="font-bold">{t("update_available")} · v{updater.available.version}</span>
+      </button>
+    {/if}
     <div class="card px-3 py-2 flex items-center gap-2 text-xs">
       <span class="w-2 h-2 rounded-full" style={"background:" + busyDot} class:pulse={app.busy}></span>
       <span class="text-[var(--muted)]">

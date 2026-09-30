@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { app, applyPersona } from "../state.svelte";
+  import { getVersion } from "@tauri-apps/api/app";
+  import { app, applyPersona, updater, checkForUpdate, installUpdate } from "../state.svelte";
   import { t, setLang, i18n } from "../i18n.svelte";
-  import { api, type TestProviderResult } from "../api";
+  import { api, isTauri, type TestProviderResult } from "../api";
   import type { Settings } from "../types";
   import classic from "../../assets/characters/classic.png";
   import dark from "../../assets/characters/dark.png";
@@ -16,6 +17,7 @@
   let testing = $state(false);
   let testResult = $state<TestProviderResult | null>(null);
   let error = $state("");
+  let appVersion = $state("");
 
   const styles = [
     { id: "classic", img: classic, label: "Classic" },
@@ -35,6 +37,11 @@
 
   onMount(() => {
     if (app.settings) draft = JSON.parse(JSON.stringify(app.settings));
+    if (isTauri()) {
+      getVersion().then((v) => (appVersion = v)).catch(() => {});
+    } else {
+      appVersion = "0.2.0 (demo)";
+    }
   });
 
   function applyPreset(p: (typeof presets)[number]) {
@@ -167,6 +174,35 @@
         {t("watched_folder")}
         <input class="input mt-1" bind:value={draft.watched_folder} placeholder="C:\Users\me\Vara\Inbox" />
       </label>
+    </section>
+
+    <!-- updates (over-the-air) -->
+    <section class="card p-6">
+      <h2 class="font-bold mb-4">{t("updates_title")}</h2>
+      <div class="flex items-center gap-3 flex-wrap text-sm">
+        <span class="chip">v{appVersion || "…"} {updater.available ? "→ v" + updater.available.version : ""}</span>
+        {#if updater.available}
+          <button class="btn text-xs" onclick={installUpdate} disabled={updater.installing}>
+            {updater.installing ? t("update_installing") : t("update_install")}
+          </button>
+          {#if updater.installing && updater.progress}
+            <span class="text-xs text-[var(--muted)]">
+              {t("update_progress")}
+              {#if updater.progress.total}
+                {Math.round((updater.progress.downloaded / updater.progress.total) * 100)}%
+              {/if}
+            </span>
+          {/if}
+        {:else}
+          <button class="btn-ghost text-xs" onclick={() => checkForUpdate(false)} disabled={updater.checking}>
+            {updater.checking ? t("update_checking") : t("update_check")}
+          </button>
+          {#if !updater.checking && appVersion}
+            <span class="text-xs text-[var(--ok)]">{t("update_latest")}</span>
+          {/if}
+        {/if}
+      </div>
+      <p class="text-xs text-[var(--muted)] mt-3">{t("update_auto_note")}</p>
     </section>
 
     <!-- language + save -->
