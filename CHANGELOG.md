@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.3.0 — The entity acts (2026-10-01)
+
+The critique that drove this release: *"where do I chat with the entity — not
+just open separate missions? Missions should happen IN the chat, and Vara
+should actually control the machine."* So v0.3.0 removes the seams.
+
+### Missions live inside the conversation (chat-first, end to end)
+- **No more separate mission launcher.** The Dashboard and Missions pages are
+  gone; the chat is the product. When a request is a goal, Vara chats about it
+  AND starts the mission in the same thread.
+- **Auto-start by default** (`auto_start_missions`, budget-capped, read-only):
+  a proposed mission begins on its own, a live mission card appears in the
+  thread, and progress (steps, tokens, status) streams into it in real time.
+- The final report lands back in the thread as a closing message; the
+  conversation is linked to the mission, so every follow-up is grounded in the
+  report. Manual "turn into mission" remains as fallback when Vara is busy.
+- Migration v3: messages gain `kind` ("text" | "mission" | "action") and
+  `mission_id`.
+
+### Vara controls the machine (policy-gated)
+- New `[[sys]]` protocol: the model proposes `open_url` / `open_path` / `run`
+  actions; the **shell layer** executes them — the model never runs anything
+  itself.
+- Every action lands in the thread as a receipt card (target, ok/fail, output
+  snippet) and an events-table row. Nothing executes invisibly.
+- `run` commands always require an explicit in-chat approval card, run with a
+  60s timeout, capped output, and cwd confined to the watched folder or home.
+- Toggles: `run_commands`, `open_urls`, `open_paths` — deny wins.
+
+### Protocol leak fixed for real
+- Models mangle markers (`[mission] … {MISSION_CLOSE}`); v0.2.0 matched the
+  exact protocol only, so raw markers leaked into bubbles. Extraction is now
+  tolerant (core + webview, in sync, unit-tested) — the UI can no longer leak
+  protocol text. During streaming, blocks are stripped live.
+
+### Provider & platform
+- Shipped default provider preset (OpenAI-compatible endpoint + model, empty
+  key — BYOK, the key never ships).
+- tokio::process based command runner; new `start_mission_in_conversation` and
+  `sys_execute` commands.
+
+### Hygiene
+- Git history rewrite: all commits now correctly attributed to the owner
+  (a stray `vara-dev` contributor identity is gone).
+- `AGENTS.md` + five project skills under `skills/vara/` encode the
+  invariants for any agent working on the repo.
+
 ## v0.2.0 — The conversation is the entity (2026-10-01)
 
 The v0.1.0 build answered "what can the entity do?" with a mission runner.

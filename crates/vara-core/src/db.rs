@@ -97,6 +97,12 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, id);
     CREATE INDEX IF NOT EXISTS idx_conversations_upd ON conversations(updated_at DESC);
     "#,
+    /* v3 — missions and OS actions live INSIDE the conversation thread */
+    r#"
+    ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text';
+    ALTER TABLE messages ADD COLUMN mission_id INTEGER;
+    CREATE INDEX IF NOT EXISTS idx_messages_mission ON messages(mission_id);
+    "#,
 ];
 
 impl Database {
@@ -761,6 +767,16 @@ impl Database {
         Ok(())
     }
 
+    /// Binds a thread to a mission so every later reply is grounded in the
+    /// mission's report (the "mission lives in the chat" link).
+    pub fn link_conversation_mission(&self, id: i64, mission_id: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE conversations SET mission_id = ?2, updated_at = datetime('now') WHERE id = ?1",
+            params![id, mission_id],
+        )?;
+        Ok(())
+    }
+
     pub fn touch_conversation(&self, id: i64) -> Result<()> {
         self.conn().execute(
             "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
@@ -788,10 +804,35 @@ impl Database {
         tokens: i64,
         status: &str,
     ) -> Result<i64> {
+        self.insert_chat_message_typed(
+            conversation_id,
+            role,
+            content,
+            model,
+            tokens,
+            status,
+            "text",
+            None,
+        )
+    }
+
+    /// Full variant: `kind` selects the card the UI renders ("text" |
+    /// "mission" | "action"), `mission_id` links the row to a live mission.
+    pub fn insert_chat_message_typed(
+        &self,
+        conversation_id: i64,
+        role: &str,
+        content: &str,
+        model: Option<&str>,
+        tokens: i64,
+        status: &str,
+        kind: &str,
+        mission_id: Option<i64>,
+    ) -> Result<i64> {
         self.conn().execute(
-            "INSERT INTO messages(conversation_id, role, content, model, tokens, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![conversation_id, role, content, model, tokens, status],
+            "INSERT INTO messages(conversation_id, role, content, model, tokens, status, kind, mission_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![conversation_id, role, content, model, tokens, status, kind, mission_id],
         )?;
         let id = self.conn().last_insert_rowid();
         self.touch_conversation(conversation_id)?;
@@ -849,11 +890,11 @@ impl Database {
     }
 
     const MESSAGE_SQL: &'static str =
-        "SELECT id, conversation_id, role, content, model, tokens, status, created_at
+        "SELECT id, conversation_id, role, content, model, tokens, status, created_at, kind, mission_id
          FROM messages WHERE conversation_id = ?1";
 
     const MESSAGE_SQL_WHERE: &'static str =
-        "SELECT id, conversation_id, role, content, model, tokens, status, created_at
+        "SELECT id, conversation_id, role, content, model, tokens, status, created_at, kind, mission_id
          FROM messages WHERE id = ?1";
 
     fn msg_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChatMessageRecord> {
@@ -866,6 +907,10 @@ impl Database {
             tokens: r.get(5)?,
             status: r.get(6)?,
             created_at: r.get(7)?,
+            kind: r
+                .get::<_, Option<String>>(8)?
+                .unwrap_or_else(|| "text".into()),
+            mission_id: r.get(9)?,
         })
     }
 

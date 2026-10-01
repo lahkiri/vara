@@ -24,8 +24,8 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Living background: two persona-colored auroras + a deep vertical wash.
-   They breathe slowly and re-tint themselves when the persona changes. */
+/* Living background: three persona-colored auroras + a slow conic shimmer +
+   a deep vertical wash. They breathe, drift and re-tint with the persona. */
 body::before {
   content: "";
   position: fixed;
@@ -34,8 +34,15 @@ body::before {
   background:
     radial-gradient(1100px 760px at 88% -12%, var(--accent-soft), transparent 62%),
     radial-gradient(900px 680px at -8% 108%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 60%),
+    radial-gradient(720px 520px at 50% 118%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 65%),
+    conic-gradient(from 210deg at 70% 30%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 30%),
     linear-gradient(180deg, var(--bg) 0%, color-mix(in srgb, var(--bg) 82%, #000) 100%);
   animation: aurora-drift 26s ease-in-out infinite alternate;
+}
+
+/* a faint second layer that slides opposite the first — real depth */
+body::before {
+  background-repeat: no-repeat;
 }
 
 /* Fine film grain so large dark surfaces never feel flat */
@@ -208,6 +215,67 @@ body::after {
   border: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   border-radius: 0.9rem;
+}
+
+/* live mission card — the mission lives IN the thread */
+.mission-card {
+  background: linear-gradient(165deg, color-mix(in srgb, var(--accent) 14%, transparent), rgba(255, 255, 255, 0.02));
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  border-radius: 1.1rem;
+  padding: 0.9rem 1.1rem;
+  box-shadow: 0 14px 34px -22px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(14px);
+}
+.mission-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 0.6rem;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.8rem;
+}
+.mission-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+.mission-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 60%, #ffffff 30%));
+  box-shadow: 0 0 12px -2px var(--accent-soft);
+  transition: width 0.6s ease;
+}
+
+/* OS action receipts inside the thread */
+.action-card {
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015));
+  border: 1px solid var(--line);
+  border-radius: 1.1rem;
+  padding: 0.8rem 1rem;
+  backdrop-filter: blur(14px);
+}
+.action-card.action-failed {
+  border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+}
+.action-output {
+  margin: 0.5rem 0 0;
+  padding: 0.55rem 0.7rem;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--line);
+  border-radius: 0.6rem;
+  font-size: 0.7rem;
+  line-height: 1.55;
+  max-height: 9rem;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  direction: ltr;
+  text-align: left;
 }
 
 .md-body { line-height: 1.75; }

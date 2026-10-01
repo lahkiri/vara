@@ -10,12 +10,38 @@
 //!    attachment when the thread was opened from a mission.
 
 use crate::db::Database;
-use crate::types::{ChatMessage, Conversation, Settings};
+use crate::types::{ChatMessage, Conversation, Settings, SysAction};
 use crate::Result;
+use regex::Regex;
+use std::sync::LazyLock;
 
 /// Markers the model may emit to propose a mission from inside the chat.
 pub const MISSION_OPEN: &str = "[[mission]]";
 pub const MISSION_CLOSE: &str = "[[/mission]]";
+
+/// Mission markers, tolerantly matched: models regularly mangle the exact
+/// protocol ("[mission] … {MISSION_CLOSE}") — the UI must never leak it.
+static MISSION_OPEN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\[\[\s*mission\s*\]\]|\[\s*mission\s*\]|\{\{\s*mission\s*\}\}|\{\s*mission\s*\}",
+    )
+    .expect("mission open regex")
+});
+static MISSION_CLOSE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\[\[\s*/\s*mission\s*\]\]|\[\s*/\s*mission\s*\]|\{\{\s*/\s*mission\s*\}\}|\{\s*/\s*mission\s*\}|\{\s*mission_close\s*\}|\[\[\s*mission_close\s*\]\]",
+    )
+    .expect("mission close regex")
+});
+
+/// OS-action proposal protocol: [[sys]] {json} [[/sys]]
+static SYS_OPEN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\[\[\s*sys\s*\]\]|\[\s*sys\s*\]|\{\s*sys_open\s*\}").expect("sys open regex")
+});
+static SYS_CLOSE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\[\[\s*/\s*sys\s*\]\]|\[\s*/\s*sys\s*\]|\{\s*sys_close\s*\}")
+        .expect("sys close regex")
+});
 
 /// How many recent messages feed the context (continuity window).
 pub const HISTORY_WINDOW: i64 = 24;
@@ -44,16 +70,20 @@ fn identity_block(settings: &Settings) -> String {
     let persona = persona_flavor(&settings.persona_style);
     format!(
         "You are Vara — a persistent autonomous entity living on the user's machine, not a generic chatbot and not an assistant persona that resets between sessions.\n\
-         You have: a persistent memory (SQLite notes gathered from missions and files), missions you execute with web search and verified provenance, and a continuous presence (you keep running in the system tray even when the window is closed).\n\
+         You have: a persistent memory (SQLite notes gathered from missions and files), missions you execute with web search and verified provenance, a continuous presence (you keep running in the system tray even when the window is closed), and the ability to act on this machine within the owner's policy.\n\
          {persona}\n\
          Language: mirror the language of the user's latest message exactly. If they write Arabic, answer in fluent Arabic. If they write English, answer in English.\n\
          Behavior:\n\
          - Be present and personal. You may reference earlier turns and your memory naturally.\n\
          - Be honest: if you do not know or lack live data, say so plainly.\n\
          - Keep replies concise by default; expand only when asked or when the topic needs depth.\n\
-         - You do NOT have live web access inside the chat. When the user asks for research, deep analysis, comparisons, or anything that needs searching the web and a cited report, do NOT pretend to search. Instead, answer briefly from what you know, then propose a mission on the LAST line using exactly this protocol:\n\
-         {MISSION_OPEN} a clear, self-contained goal for the research mission {{MISSION_CLOSE}}\n\
-         - Use the mission proposal only when the user actually wants a research task or real-time data. Never use it for normal conversation.\n\
+         - Missions: you do NOT have live web access inside the chat itself. When the user asks for research, deep analysis, comparisons, or anything that needs searching the web and a cited report, do NOT pretend to search. Answer briefly from what you know, then propose a mission on the LAST line using exactly this protocol:\n\
+         {MISSION_OPEN} a clear, self-contained goal for the research mission {MISSION_CLOSE}\n\
+         Proposed missions start automatically (budget-capped, read-only) and their live progress plus the final report appear right here in this thread — phrase the goal as something you will go do, and keep chatting while it runs.\n\
+         - OS actions: when the user asks you to open a website, file or folder, or to run a shell command, say in one short line what you are about to do, then emit ONE action block on the LAST line, exactly:\n\
+         [[sys]] {{\"action\":\"open_url\"|\"open_path\"|\"run\",\"target\":\"<url, path or command>\"}} [[/sys]]\n\
+         The owner's policy gates every action; 'run' always shows an explicit approval card first. Never wrap the block in code fences, never emit more than one, never fabricate its output.\n\
+         - Use the mission protocol only for real research or real-time data, and the sys protocol only when the user wants something done on this machine. Never use either for normal conversation.\n\
          - Never invent citations or URLs in chat."
     )
 }
@@ -130,23 +160,107 @@ pub fn build_context(
 }
 
 /// Extracts the mission proposal from a chat reply, removing the marker block
-/// from the display text. Returns `(clean_reply, Option<goal>)`.
+/// from the display text. Tolerant of mangled markers. Returns `(clean, goal)`.
 pub fn extract_mission_proposal(reply: &str) -> (String, Option<String>) {
-    if let Some(start) = reply.find(MISSION_OPEN) {
-        let after = &reply[start + MISSION_OPEN.len()..];
-        if let Some(end) = after.find(MISSION_CLOSE) {
-            let goal = after[..end].trim().to_string();
-            let mut clean = String::with_capacity(reply.len());
-            clean.push_str(&reply[..start]);
-            clean.push_str(&after[end + MISSION_CLOSE.len()..]);
-            let clean = clean.trim().to_string();
-            if goal.is_empty() {
-                return (clean, None);
-            }
-            return (clean, Some(goal));
+    let open = match MISSION_OPEN_RE.find(reply) {
+        Some(m) => m,
+        None => return (reply.trim().to_string(), None),
+    };
+    let after_open = &reply[open.end()..];
+    let (goal_raw, consumed_to) = match MISSION_CLOSE_RE.find(after_open) {
+        Some(close) => (
+            after_open[..close.start()].to_string(),
+            open.end() + close.end(),
+        ),
+        None => {
+            // Unterminated block: take the first line after the marker only.
+            let line_end = after_open.find('\n').unwrap_or(after_open.len().min(300));
+            (
+                after_open[..line_end].trim().to_string(),
+                open.end() + line_end,
+            )
         }
+    };
+    let goal = goal_raw.trim().to_string();
+    let mut clean = String::with_capacity(reply.len());
+    clean.push_str(&reply[..open.start()]);
+    clean.push_str(&reply[consumed_to..]);
+    let clean = collapse_blank_lines(&clean);
+    if goal.is_empty() {
+        return (clean, None);
     }
-    (reply.trim().to_string(), None)
+    (clean, Some(goal))
+}
+
+/// Extracts OS-action proposals ([[sys]] {json} [[/sys]]) from a chat reply,
+/// removing the blocks from the display text. Returns `(clean, actions)`.
+pub fn extract_sys_actions(reply: &str) -> (String, Vec<SysAction>) {
+    let mut actions = Vec::new();
+    let mut clean = reply.to_string();
+    // Up to 3 blocks per reply — one is the norm, three is generous.
+    for _ in 0..3 {
+        let Some(open) = SYS_OPEN_RE.find(&clean) else {
+            break;
+        };
+        let after = &clean[open.end()..];
+        // body ends where the close marker STARTS; removal ends where it ENDS
+        let (body_to, consumed_to) = match SYS_CLOSE_RE.find(after) {
+            Some(close) => (open.end() + close.start(), open.end() + close.end()),
+            None => {
+                let nl = open.end() + after.find('\n').unwrap_or(after.len().min(400));
+                (nl, nl)
+            }
+        };
+        let json_text = strip_code_fences(&clean[open.end()..body_to]);
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_text.trim()) {
+            let action = v
+                .get("action")
+                .and_then(|a| a.as_str())
+                .unwrap_or("")
+                .to_string();
+            let target = v
+                .get("target")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if matches!(action.as_str(), "open_url" | "open_path" | "run") && !target.is_empty() {
+                actions.push(SysAction { action, target });
+            }
+        }
+        clean = format!("{}{}", &clean[..open.start()], &clean[consumed_to..]);
+    }
+    let clean = collapse_blank_lines(&clean);
+    (clean, actions)
+}
+
+fn strip_code_fences(s: &str) -> &str {
+    let t = s.trim();
+    let t = t
+        .strip_prefix("```json")
+        .or_else(|| t.strip_prefix("```"))
+        .unwrap_or(t);
+    let t = t.strip_suffix("```").unwrap_or(t);
+    t.trim()
+}
+
+/// Tidy up the markerless text: no more than one blank line in a row.
+fn collapse_blank_lines(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut blanks = 0usize;
+    for line in s.lines() {
+        if line.trim().is_empty() {
+            blanks += 1;
+            if blanks > 1 {
+                continue;
+            }
+        } else {
+            blanks = 0;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.trim().to_string()
 }
 
 #[cfg(test)]
@@ -183,6 +297,54 @@ mod tests {
         let (clean, goal) = extract_mission_proposal("مرحباً! كيف أساعدك اليوم؟");
         assert!(goal.is_none());
         assert_eq!(clean, "مرحباً! كيف أساعدك اليوم؟");
+    }
+
+    #[test]
+    fn mission_proposal_tolerates_mangled_markers() {
+        // Exactly what leaked into the user's screenshot.
+        let reply = "الاسم الحالي: \"Muse\" — فرقة روك بريطانية، منصة ذكاء اصطناعي من Salesforce.\n[mission] ابحث عن كل المعاني والتقاليد المرتبطة بهذا الاسم {MISSION_CLOSE}";
+        let (clean, goal) = extract_mission_proposal(reply);
+        assert!(!clean.contains("mission"), "leaked marker in: {clean}");
+        assert!(!clean.contains("MISSION_CLOSE"));
+        assert!(goal.as_deref().unwrap_or_default().contains("المعاني"));
+    }
+
+    #[test]
+    fn mission_proposal_unterminated_block() {
+        let reply = "خلاصة سريعة.\n[[mission]] قارن بين llama.cpp و vLLM في الاستهلاك";
+        let (clean, goal) = extract_mission_proposal(reply);
+        assert!(!clean.contains("[[mission]]"));
+        assert!(goal.unwrap().contains("vLLM"));
+    }
+
+    #[test]
+    fn sys_action_extraction() {
+        let reply = "سأفتح صفحة المشروع الآن.\n[[sys]] {\"action\":\"open_url\",\"target\":\"https://github.com/lahkiri/vara\"} [[/sys]]";
+        let (clean, actions) = extract_sys_actions(reply);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].action, "open_url");
+        assert_eq!(actions[0].target, "https://github.com/lahkiri/vara");
+        assert!(!clean.contains("[[sys]]"));
+        assert!(clean.contains("سأفتح"));
+    }
+
+    #[test]
+    fn sys_action_fenced_and_mangled() {
+        let reply =
+            "OK.\n[sys] ```json\n{\"action\":\"run\",\"target\":\"cargo test\"}\n``` {sys_close}";
+        let (clean, actions) = extract_sys_actions(reply);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].action, "run");
+        assert!(!clean.contains("cargo test"));
+    }
+
+    #[test]
+    fn sys_action_invalid_is_dropped() {
+        let (clean, actions) = extract_sys_actions(
+            "hi\n[[sys]] {\"action\":\"format_disk\",\"target\":\"C_drive\"} [[/sys]]",
+        );
+        assert!(actions.is_empty());
+        assert!(!clean.contains("format_disk"));
     }
 
     #[test]

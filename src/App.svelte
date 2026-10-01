@@ -3,8 +3,6 @@
   import { app, boot, initEvents } from "./lib/state.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import ChatView from "./lib/components/ChatView.svelte";
-  import Dashboard from "./lib/components/Dashboard.svelte";
-  import MissionView from "./lib/components/MissionView.svelte";
   import MemoryView from "./lib/components/MemoryView.svelte";
   import ReportsView from "./lib/components/ReportsView.svelte";
   import ActivityView from "./lib/components/ActivityView.svelte";
@@ -31,11 +29,7 @@
       {:else}
         <div class="h-full overflow-y-auto">
           <div class="max-w-5xl mx-auto px-6 py-6">
-            {#if app.view === "dashboard"}
-              <Dashboard />
-            {:else if app.view === "missions"}
-              <MissionView />
-            {:else if app.view === "memory"}
+            {#if app.view === "memory"}
               <MemoryView />
             {:else if app.view === "reports"}
               <ReportsView />

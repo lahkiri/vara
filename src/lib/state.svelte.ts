@@ -3,7 +3,7 @@
 
 import { listen } from "@tauri-apps/api/event";
 import { api, isTauri, type EntityEvent, type Bootstrap, type EntityStatus, type Stats, type ChatDeltaPayload } from "./api";
-import type { Settings, Mission, Conversation, ChatMessageRecord, UpdateInfo, ChatDonePayload } from "./types";
+import type { Settings, Mission, Conversation, ChatMessageRecord, SysAction, UpdateInfo, ChatDonePayload } from "./types";
 import { loadLang, applyLangDom } from "./i18n.svelte";
 
 export const app = $state<{
@@ -41,6 +41,10 @@ export const chat = $state<{
   loadingThread: boolean;
   error: string;
   pendingQuestion: string;
+  /// Live mission progress keyed by mission id — feeds the in-thread cards.
+  liveMissions: Record<number, { status: string; steps_done: number; max_steps: number; spent_tokens: number }>;
+  /// OS actions waiting for the owner's approval, keyed by message id.
+  pendingSys: Record<number, SysAction[]>;
 }>({
   conversations: [],
   activeId: null,
@@ -48,6 +52,8 @@ export const chat = $state<{
   loadingThread: false,
   error: "",
   pendingQuestion: "",
+  liveMissions: {},
+  pendingSys: {},
 });
 
 export async function loadConversations(): Promise<void> {
@@ -60,6 +66,18 @@ export async function openConversation(id: number): Promise<void> {
   chat.error = "";
   chat.messages = await api.messages(id).catch(() => []);
   chat.loadingThread = false;
+  // seed live mission cards with the persisted status (historical threads)
+  const cardIds = new Set(
+    chat.messages.filter((m) => m.kind === "mission" && m.mission_id).map((m) => m.mission_id as number),
+  );
+  if (cardIds.size > 0) {
+    const all: Mission[] = await api.missions(100).catch(() => []);
+    for (const m of all) {
+      if (cardIds.has(m.id) && !chat.liveMissions[m.id]) {
+        chat.liveMissions[m.id] = { status: m.status, steps_done: m.steps_done, max_steps: m.max_steps, spent_tokens: m.spent_tokens };
+      }
+    }
+  }
   if (!isTauri()) scrollChatToBottom();
 }
 
@@ -81,6 +99,40 @@ export async function deleteConversation(id: number): Promise<void> {
   }
 }
 
+/// Starts a mission that LIVES in the open thread (manual fallback when the
+/// auto-start was disabled or Vara was busy at proposal time).
+export async function startMissionFromChat(goal: string): Promise<void> {
+  if (!goal.trim()) return;
+  if (chat.activeId === null) await newConversation();
+  if (chat.activeId === null) return;
+  try {
+    await api.startMissionInConversation(chat.activeId, goal.trim());
+    chat.error = "";
+  } catch (e) {
+    chat.error = String(e);
+  }
+}
+
+/// Executes one approved OS action; the receipt lands in the thread.
+export async function executeSysAction(messageId: number, action: SysAction): Promise<void> {
+  if (chat.activeId === null) return;
+  try {
+    await api.sysExecute(chat.activeId, action.action, action.target);
+  } catch (e) {
+    chat.error = String(e);
+  } finally {
+    const list = chat.pendingSys[messageId];
+    if (list) {
+      chat.pendingSys[messageId] = list.filter((a) => a.target !== action.target || a.action !== action.action);
+      if (chat.pendingSys[messageId].length === 0) delete chat.pendingSys[messageId];
+    }
+  }
+}
+
+export function dismissSysActions(messageId: number): void {
+  delete chat.pendingSys[messageId];
+}
+
 export async function sendMessage(text: string): Promise<void> {
   const content = text.trim();
   if (!content || chat.activeId === null) return;
@@ -97,6 +149,8 @@ export async function sendMessage(text: string): Promise<void> {
       tokens: 0,
       status: "ok",
       created_at: "",
+      kind: "text",
+      mission_id: null,
     });
     chat.messages.push({
       id: start.assistant_message_id,
@@ -107,6 +161,8 @@ export async function sendMessage(text: string): Promise<void> {
       tokens: 0,
       status: "streaming",
       created_at: "",
+      kind: "text",
+      mission_id: null,
     });
     if (!isTauri()) scrollChatToBottom();
   } catch (e) {
@@ -140,8 +196,27 @@ function applyDone(p: ChatDonePayload): void {
     m.model = p.model;
     m.tokens = p.tokens;
   }
+  // OS actions awaiting approval attach to the assistant message
+  if (p.sys_actions && p.sys_actions.length > 0) {
+    chat.pendingSys[p.message_id] = p.sys_actions;
+  }
   if (p.error) chat.error = p.error;
   if (!isTauri()) scrollChatToBottom(true);
+}
+
+/// Background rows (mission cards, OS receipts, mission closings) arrive as
+/// full records — append them to the open thread without a reload.
+function applyAppended(rec: ChatMessageRecord): void {
+  loadConversations().catch(() => {});
+  if (rec.conversation_id !== chat.activeId) return;
+  if (chat.messages.some((x) => x.id === rec.id)) return;
+  chat.messages.push(rec);
+  if (!isTauri()) scrollChatToBottom(true);
+}
+
+function seedLiveMission(id: number, patch: Partial<{ status: string; steps_done: number; max_steps: number; spent_tokens: number }>): void {
+  const cur = chat.liveMissions[id] ?? { status: "running", steps_done: 0, max_steps: 14, spent_tokens: 0 };
+  chat.liveMissions[id] = { ...cur, ...patch };
 }
 
 /// True while any assistant reply is streaming in the open thread.
@@ -161,24 +236,48 @@ export function lastMissionProposal(): { messageId: number; goal: string } | nul
   return null;
 }
 
+/// Tolerant marker matching — models mangle the exact protocol, and the UI
+/// must never leak any variant of it (this exact bug shipped in v0.2.0).
+const MISSION_OPEN_RE =
+  /(?:\[\[\s*mission\s*\]\]|\[\s*mission\s*\]|\{\{\s*mission\s*\}\}|\{\s*mission\s*\})/i;
+const MISSION_CLOSE_RE =
+  /(?:\[\[\s*\/\s*mission\s*\]\]|\[\s*\/\s*mission\s*\]|\{\{\s*\/\s*mission\s*\}\}|\{\s*\/\s*mission\s*\}|\{\s*mission_close\s*\})/i;
+const SYS_OPEN_RE = /(?:\[\[\s*sys\s*\]\]|\[\s*sys\s*\]|\{\s*sys_open\s*\})/i;
+const SYS_CLOSE_RE = /(?:\[\[\s*\/\s*sys\s*\]\]|\[\s*\/\s*sys\s*\]|\{\s*sys_close\s*\})/i;
+
 export function extractMissionGoal(content: string): string | null {
-  const open = "[[mission]]";
-  const close = "[[/mission]]";
-  const s = content.indexOf(open);
-  if (s === -1) return null;
-  const e = content.indexOf(close, s);
-  if (e === -1) return null;
-  return content.slice(s + open.length, e).trim() || null;
+  const open = MISSION_OPEN_RE.exec(content);
+  if (!open) return null;
+  const rest = content.slice(open.index + open[0].length);
+  const close = MISSION_CLOSE_RE.exec(rest);
+  const goal = (close ? rest.slice(0, close.index) : (rest.split("\n")[0] ?? "")).trim();
+  return goal || null;
+}
+
+/// Strips mission + sys protocol blocks from display text (tolerant).
+export function stripProtocolBlocks(content: string): string {
+  let out = content;
+  const pairs: [RegExp, RegExp][] = [
+    [MISSION_OPEN_RE, MISSION_CLOSE_RE],
+    [SYS_OPEN_RE, SYS_CLOSE_RE],
+  ];
+  for (const [openRe, closeRe] of pairs) {
+    for (let i = 0; i < 3; i++) {
+      const open = openRe.exec(out);
+      if (!open) break;
+      const afterOpen = out.slice(open.index + open[0].length);
+      const close = closeRe.exec(afterOpen);
+      const endIdx = close
+        ? open.index + open[0].length + close.index + close[0].length
+        : open.index + open[0].length + (afterOpen.split("\n")[0]?.length ?? 0);
+      out = (out.slice(0, open.index) + out.slice(endIdx)).trim();
+    }
+  }
+  return out.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 export function stripMissionBlock(content: string): string {
-  const open = "[[mission]]";
-  const close = "[[/mission]]";
-  const s = content.indexOf(open);
-  if (s === -1) return content.trim();
-  const e = content.indexOf(close, s);
-  if (e === -1) return content.trim();
-  return (content.slice(0, s) + content.slice(e + close.length)).trim();
+  return stripProtocolBlocks(content);
 }
 
 export function scrollChatToBottom(smooth = false): void {
@@ -266,6 +365,24 @@ export async function boot(): Promise<void> {
 
 let listening = false;
 
+function onEntityEvent(ev: EntityEvent): void {
+  pushFeed(ev);
+  if (ev.type === "state") {
+    if (ev.state === "attentive") {
+      refreshStatus().catch(() => {});
+    }
+  } else if (ev.type === "mission_update") {
+    if (app.activeMission && app.activeMission.id === ev.id) {
+      app.activeMission.steps_done = ev.steps_done;
+      app.activeMission.spent_tokens = ev.spent_tokens;
+      app.activeMission.status = ev.status;
+    }
+    seedLiveMission(ev.id, { status: ev.status, steps_done: ev.steps_done, max_steps: ev.max_steps, spent_tokens: ev.spent_tokens });
+  } else if (ev.type === "report_ready") {
+    seedLiveMission(ev.mission_id, { status: "completed" });
+  }
+}
+
 export async function initEvents(): Promise<void> {
   if (listening) return;
   listening = true;
@@ -274,30 +391,19 @@ export async function initEvents(): Promise<void> {
     // browser mock: the mock backend speaks window CustomEvents
     window.addEventListener("mock:chat/delta", (e) => applyDelta((e as CustomEvent).detail as ChatDeltaPayload));
     window.addEventListener("mock:chat/done", (e) => applyDone((e as CustomEvent).detail as ChatDonePayload));
+    window.addEventListener("mock:chat/message", (e) => applyAppended((e as CustomEvent).detail as ChatMessageRecord));
+    window.addEventListener("mock:entity/event", (e) => onEntityEvent((e as CustomEvent).detail as EntityEvent));
     return;
   }
 
-  await listen<EntityEvent>("entity://event", (e) => {
-    const ev = e.payload;
-    pushFeed(ev);
-    if (ev.type === "state") {
-      if (ev.state === "attentive") {
-        refreshStatus().catch(() => {});
-      }
-    } else if (ev.type === "mission_update") {
-      if (app.activeMission && app.activeMission.id === ev.id) {
-        app.activeMission.steps_done = ev.steps_done;
-        app.activeMission.spent_tokens = ev.spent_tokens;
-        app.activeMission.status = ev.status;
-      }
-    }
-  });
+  await listen<EntityEvent>("entity://event", (e) => onEntityEvent(e.payload));
   await listen<{ report_id: number | null; status: string; mission_id: number }>("entity://done", (e) => {
     if (e.payload.report_id) app.lastReportId = e.payload.report_id;
     refreshStatus().catch(() => {});
   });
   await listen<ChatDeltaPayload>("entity://chat/delta", (e) => applyDelta(e.payload));
   await listen<ChatDonePayload>("entity://chat/done", (e) => applyDone(e.payload));
+  await listen<ChatMessageRecord>("entity://chat/message", (e) => applyAppended(e.payload));
   await listen<{ downloaded: number; total: number | null }>("entity://update/progress", (e) => {
     updater.progress = e.payload;
   });

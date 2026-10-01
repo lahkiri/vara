@@ -13,7 +13,7 @@ pub mod provenance;
 pub mod tools;
 pub mod types;
 
-pub use chat::{build_context, extract_mission_proposal, persona_flavor};
+pub use chat::{build_context, extract_mission_proposal, extract_sys_actions, persona_flavor};
 pub use db::Database;
 pub use entity::{EntityEvent, EntityRuntime, EventSink, MissionInputs, MissionOutcome};
 pub use llm::LlmClient;

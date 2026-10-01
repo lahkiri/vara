@@ -80,6 +80,8 @@ pub fn run() {
             commands::save_settings,
             commands::test_provider,
             commands::create_and_start_mission,
+            commands::start_mission_in_conversation,
+            commands::sys_execute,
             commands::pause_entity,
             commands::cancel_mission,
             commands::get_entity_status,

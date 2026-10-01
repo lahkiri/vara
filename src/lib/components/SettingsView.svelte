@@ -40,7 +40,7 @@
     if (isTauri()) {
       getVersion().then((v) => (appVersion = v)).catch(() => {});
     } else {
-      appVersion = "0.2.0 (demo)";
+      appVersion = "0.3.0 (demo)";
     }
   });
 
@@ -168,6 +168,14 @@
         <label class="flex items-center gap-3">
           <input type="checkbox" bind:checked={draft.autonomy.notifications_enabled} class="accent-[var(--accent)] w-4 h-4" />
           {t("notifications")}
+        </label>
+        <label class="flex items-center gap-3">
+          <input type="checkbox" bind:checked={draft.autonomy.auto_start_missions} class="accent-[var(--accent)] w-4 h-4" />
+          {t("auto_start_missions")}
+        </label>
+        <label class="flex items-center gap-3">
+          <input type="checkbox" bind:checked={draft.autonomy.run_commands} class="accent-[var(--accent)] w-4 h-4" />
+          {t("run_commands")}
         </label>
       </div>
       <label class="block text-xs text-[var(--muted)] mt-4">

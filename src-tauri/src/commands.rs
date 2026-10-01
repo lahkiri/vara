@@ -136,6 +136,189 @@ fn futures_block<F: std::future::Future>(f: F) -> F::Output {
 
 // ---------- missions ----------
 
+/// Bilingual closing message appended to the thread when a mission ends —
+/// the thread stays the single source of truth (chat-first, end to end).
+fn mission_closing_text(
+    status: &str,
+    verdict: Option<&String>,
+    backed: Option<f64>,
+    error: Option<&str>,
+    lang: &str,
+) -> String {
+    let arabic = lang == "ar" || lang == "arabic";
+    match status {
+        "completed" => {
+            let pct = backed.map(|r| (r * 100.0) as i64).unwrap_or(0);
+            if arabic {
+                format!("أنهيت المهمة ✅ — التقرير جاهز (توثيق مصادره {pct}%). التقرير مربوط بهذه المحادثة الآن: اسألني عن أي تفصيل فيه وسأجيب منه مباشرة.")
+            } else {
+                let v = verdict.unwrap_or(&String::new()).clone();
+                format!("Mission complete ✅ — report ready (provenance {v}, {pct}% backed). It is attached to this thread: ask me about any detail and I will answer from it.")
+            }
+        }
+        "cancelled" => {
+            if arabic {
+                "أوقفتُ المهمة كما طلبت. يمكنني إعادة تشغيلها أو تعديل الهدف متى شئت.".into()
+            } else {
+                "Mission cancelled as you asked. I can restart or reshape it anytime.".into()
+            }
+        }
+        _ => {
+            let e = error.unwrap_or("unknown error");
+            if arabic {
+                format!("توقفت المهمة دون تقرير: {e}. قل لي كيف نعيد المحاولة وسأعدّل الخطة.")
+            } else {
+                format!("The mission stopped without a report: {e}. Tell me how to retry and I will adjust the plan.")
+            }
+        }
+    }
+}
+
+/// Creates a mission from inside a chat thread, links the thread to it,
+/// inserts a live mission card row, and spawns the runner whose progress
+/// and final report flow back into the same thread.
+pub fn launch_thread_mission(
+    app: &AppHandle,
+    conversation_id: i64,
+    goal: &str,
+) -> Result<i64, String> {
+    let state = app.state::<AppState>();
+    let goal = goal.trim().to_string();
+    if goal.is_empty() {
+        return Err("the goal is empty — give Vara a mission".into());
+    }
+    if state.busy.load(Ordering::SeqCst) {
+        return Err("Vara is already working on a mission".into());
+    }
+    let snapshot = state.settings_snapshot();
+    if snapshot.provider.base_url.trim().is_empty() {
+        return Err("no model provider configured — open Settings first".into());
+    }
+    if state.db.get_conversation(conversation_id).is_err() {
+        return Err("conversation not found".into());
+    }
+
+    let budget = snapshot
+        .mission_defaults
+        .budget_tokens
+        .clamp(3_000, 300_000);
+    let steps = snapshot.mission_defaults.max_steps.clamp(4, 40);
+    let id = state
+        .db
+        .create_mission(&goal, budget, steps)
+        .map_err(|e| e.to_string())?;
+    let _ = state.db.link_conversation_mission(conversation_id, id);
+
+    // the live card inside the thread
+    let card = serde_json::json!({ "goal": goal, "mission_id": id });
+    let card_id = state
+        .db
+        .insert_chat_message_typed(
+            conversation_id,
+            "assistant",
+            &card.to_string(),
+            None,
+            0,
+            "ok",
+            "mission",
+            Some(id),
+        )
+        .map_err(|e| e.to_string())?;
+    if let Ok(rec) = state.db.get_chat_message(card_id) {
+        let _ = app.emit("entity://chat/message", &rec);
+    }
+
+    spawn_mission_runner(app.clone(), id, Some(conversation_id));
+    Ok(id)
+}
+
+/// Shared runner for every mission (legacy launcher and chat-born ones).
+/// Progress streams through the entity event bus; the outcome lands back
+/// inside the originating thread when there is one.
+fn spawn_mission_runner(app: AppHandle, mission_id: i64, conversation_id: Option<i64>) {
+    let Some(st) = app.try_state::<AppState>() else {
+        return;
+    };
+    let snapshot = st.settings_snapshot();
+    let language = snapshot.language.clone();
+    let llm = match LlmClient::new(&snapshot.provider) {
+        Ok(l) => l,
+        Err(e) => {
+            let _ = st
+                .db
+                .update_mission_status(mission_id, "failed", Some(&e.to_string()));
+            return;
+        }
+    };
+
+    st.busy.store(true, Ordering::SeqCst);
+    st.cancel.store(false, Ordering::SeqCst);
+    st.paused.store(false, Ordering::SeqCst);
+
+    let runtime = EntityRuntime {
+        db: st.db.clone(),
+        sink: Arc::new(TauriSink { app: app.clone() }),
+        http: HTTP_CLIENT.clone(),
+    };
+    let inputs = MissionInputs {
+        language: language.clone(),
+        paused: st.paused.clone(),
+        cancel: st.cancel.clone(),
+    };
+    let busy_flag = st.busy.clone();
+    let db = st.db.clone();
+    let app2 = app.clone();
+
+    tauri::async_runtime::spawn(async move {
+        let outcome = runtime.run_mission(mission_id, Arc::new(llm), inputs).await;
+        busy_flag.store(false, Ordering::SeqCst);
+
+        if let Some(conv) = conversation_id {
+            let (status, verdict, backed, error) = match &outcome {
+                Ok(o) => (
+                    o.status.clone(),
+                    o.verdict.clone(),
+                    o.backed_ratio,
+                    o.status.clone(),
+                ),
+                Err(e) => ("failed".into(), None, None, e.to_string()),
+            };
+            let error_ref = if status == "failed" {
+                Some(error.as_str())
+            } else {
+                None
+            };
+            let text =
+                mission_closing_text(&status, verdict.as_ref(), backed, error_ref, &language);
+            if let Ok(mid) = db.insert_chat_message(conv, "assistant", &text, None, 0, "ok") {
+                if let Ok(rec) = db.get_chat_message(mid) {
+                    let _ = app2.emit("entity://chat/message", &rec);
+                }
+            }
+        }
+
+        match outcome {
+            Ok(o) => {
+                let body = match (&o.verdict, o.backed_ratio) {
+                    (Some(v), Some(r)) => format!(
+                        "Mission {} — provenance {} ({}% backed)",
+                        o.status,
+                        v,
+                        (r * 100.0) as i64
+                    ),
+                    _ => format!("Mission {}", o.status),
+                };
+                notify_user(&app2, "Vara", &body);
+                let _ = app2.emit("entity://done", &o);
+            }
+            Err(e) => {
+                let _ = db.update_mission_status(mission_id, "failed", Some(&e.to_string()));
+                notify_user(&app2, "Vara", &format!("Mission failed: {e}"));
+            }
+        }
+    });
+}
+
 #[tauri::command]
 pub fn create_and_start_mission(
     app: AppHandle,
@@ -167,61 +350,18 @@ pub fn create_and_start_mission(
         .db
         .create_mission(&goal, budget, steps)
         .map_err(|e| e.to_string())?;
-
-    let provider = state.settings_snapshot().provider;
-    let llm = match LlmClient::new(&provider) {
-        Ok(l) => l,
-        Err(e) => {
-            let _ = state
-                .db
-                .update_mission_status(id, "failed", Some(&e.to_string()));
-            return Err(e.to_string());
-        }
-    };
-
-    state.busy.store(true, Ordering::SeqCst);
-    state.cancel.store(false, Ordering::SeqCst);
-    state.paused.store(false, Ordering::SeqCst);
-
-    let runtime = EntityRuntime {
-        db: state.db.clone(),
-        sink: Arc::new(TauriSink { app: app.clone() }),
-        http: HTTP_CLIENT.clone(),
-    };
-    let inputs = MissionInputs {
-        language: state.settings_snapshot().language,
-        paused: state.paused.clone(),
-        cancel: state.cancel.clone(),
-    };
-    let busy_flag = state.busy.clone();
-    let db = state.db.clone();
-    let app2 = app.clone();
-
-    tauri::async_runtime::spawn(async move {
-        let outcome = runtime.run_mission(id, Arc::new(llm), inputs).await;
-        busy_flag.store(false, Ordering::SeqCst);
-        match outcome {
-            Ok(o) => {
-                let body = match (&o.verdict, o.backed_ratio) {
-                    (Some(v), Some(r)) => format!(
-                        "Mission {} — provenance {} ({}% backed)",
-                        o.status,
-                        v,
-                        (r * 100.0) as i64
-                    ),
-                    _ => format!("Mission {}", o.status),
-                };
-                notify_user(&app2, "Vara", &body);
-                let _ = app2.emit("entity://done", &o);
-            }
-            Err(e) => {
-                let _ = db.update_mission_status(id, "failed", Some(&e.to_string()));
-                notify_user(&app2, "Vara", &format!("Mission failed: {e}"));
-            }
-        }
-    });
-
+    spawn_mission_runner(app, id, None);
     Ok(id)
+}
+
+/// The chat-first entry: start a mission that LIVES in this thread.
+#[tauri::command]
+pub fn start_mission_in_conversation(
+    app: AppHandle,
+    conversation_id: i64,
+    goal: String,
+) -> Result<i64, String> {
+    launch_thread_mission(&app, conversation_id, &goal)
 }
 
 #[tauri::command]
@@ -538,6 +678,12 @@ pub fn send_chat(
         .unwrap_or_else(|p| p.into_inner())
         .insert(conversation_id, cancel.clone());
 
+    // the entity visibly shifts into deliberation while thinking
+    let _ = app.emit(
+        "entity://event",
+        serde_json::json!({ "type": "state", "state": "deliberating", "mission_id": null }),
+    );
+
     let db = state.db.clone();
     let app2 = app.clone();
     let cancel2 = cancel.clone();
@@ -570,7 +716,9 @@ pub fn send_chat(
 
         match result {
             Ok(reply) => {
-                // keep the raw markers in storage so the proposal survives reloads
+                // keep the raw markers in storage so the proposal survives reloads,
+                // but never leak them to the UI: extract tolerantly (models mangle
+                // "[[mission]]…[[/mission]]" into "[mission]…{MISSION_CLOSE}" etc.)
                 let status = if stopped { "stopped" } else { "ok" };
                 let tokens = (reply.prompt_tokens + reply.completion_tokens) as i64;
                 let _ = db.update_chat_message(
@@ -580,7 +728,26 @@ pub fn send_chat(
                     Some(&reply.model),
                     status,
                 );
-                let (clean, goal) = vara_core::extract_mission_proposal(&reply.content);
+                let (clean_after_mission, goal) =
+                    vara_core::extract_mission_proposal(&reply.content);
+                let (clean, sys_actions) = vara_core::extract_sys_actions(&clean_after_mission);
+
+                // chat-first autonomy: proposed missions start on their own
+                // (budget-capped, read-only) unless the owner is busy or disabled it
+                let mut started_mission: Option<i64> = None;
+                if let Some(g) = goal.clone() {
+                    if !stopped {
+                        let should = app2.try_state::<AppState>().map_or(false, |st| {
+                            st.settings_snapshot().autonomy.auto_start_missions
+                                && !st.busy.load(Ordering::SeqCst)
+                        });
+                        if should {
+                            started_mission =
+                                launch_thread_mission(&app2, conversation_id, &g).ok();
+                        }
+                    }
+                }
+
                 let _ = app2.emit(
                     "entity://chat/done",
                     serde_json::json!({
@@ -591,9 +758,12 @@ pub fn send_chat(
                         "model": reply.model,
                         "status": status,
                         "mission_goal": goal,
+                        "mission_started": started_mission,
+                        "sys_actions": sys_actions,
                         "error": null,
                     }),
                 );
+                settle_state(&app2);
             }
             Err(e) => {
                 let msg = if stopped {
@@ -615,9 +785,12 @@ pub fn send_chat(
                             "model": null,
                             "status": "stopped",
                             "mission_goal": null,
+                            "mission_started": null,
+                            "sys_actions": [],
                             "error": null,
                         }),
                     );
+                    settle_state(&app2);
                     return;
                 } else {
                     format!("{e}")
@@ -633,9 +806,12 @@ pub fn send_chat(
                         "model": null,
                         "status": "error",
                         "mission_goal": null,
+                        "mission_started": null,
+                        "sys_actions": [],
                         "error": msg,
                     }),
                 );
+                settle_state(&app2);
             }
         }
     });
@@ -645,6 +821,21 @@ pub fn send_chat(
         user_message_id: user_id,
         assistant_message_id: assistant_id,
     })
+}
+
+/// Return the entity to the attentive state when nothing else is running —
+/// keeps the avatar and the tray truthful after every chat turn.
+fn settle_state(app: &AppHandle) {
+    let busy = app
+        .try_state::<AppState>()
+        .map(|st| st.busy.load(Ordering::SeqCst))
+        .unwrap_or(false);
+    if !busy {
+        let _ = app.emit(
+            "entity://event",
+            serde_json::json!({ "type": "state", "state": "attentive", "mission_id": null }),
+        );
+    }
 }
 
 #[tauri::command]
@@ -658,6 +849,174 @@ pub fn stop_chat(state: State<'_, AppState>, conversation_id: i64) -> Result<(),
         c.store(true, Ordering::SeqCst);
     }
     Ok(())
+}
+
+// ---------- OS actions (the entity controls the machine, gated by policy) ----------
+
+#[derive(serde::Serialize)]
+pub struct SysExecuteResult {
+    pub ok: bool,
+    pub action: String,
+    pub target: String,
+    pub output: String,
+    pub error: String,
+}
+
+fn clip(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+/// Executes one shell command with a hard timeout, confined to the owner's
+/// home (or the watched folder when set). Output is capped — receipts, not dumps.
+async fn run_shell_command(target: &str, cwd: Option<String>) -> (bool, String, String) {
+    use tokio::process::Command;
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(target);
+        c
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(target);
+        c
+    };
+    if let Some(dir) = cwd {
+        if std::path::Path::new(&dir).is_dir() {
+            cmd.current_dir(dir);
+        }
+    }
+    cmd.kill_on_drop(true);
+    match tokio::time::timeout(std::time::Duration::from_secs(60), cmd.output()).await {
+        Err(_) => (false, String::new(), "timed out after 60s".into()),
+        Ok(Err(e)) => (false, String::new(), e.to_string()),
+        Ok(Ok(out)) => {
+            let mut text = String::from_utf8_lossy(&out.stdout).to_string();
+            let err = String::from_utf8_lossy(&out.stderr);
+            if !err.trim().is_empty() {
+                text.push_str("\n[stderr] ");
+                text.push_str(&err);
+            }
+            let ok = out.status.success();
+            let error = if ok {
+                String::new()
+            } else {
+                format!("exit code: {:?}", out.status.code())
+            };
+            (ok, clip(&text, 4000), error)
+        }
+    }
+}
+
+/// Runs one OS action Vara proposed in the chat. The autonomy policy is
+/// enforced HERE, in the shell — the model never executes anything itself.
+/// Every receipt lands in the thread as an action card.
+#[tauri::command]
+pub async fn sys_execute(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    conversation_id: i64,
+    action: String,
+    target: String,
+) -> Result<SysExecuteResult, String> {
+    let snapshot = state.settings_snapshot();
+    let target = target.trim().to_string();
+    if target.is_empty() {
+        return Err("empty target".into());
+    }
+
+    let (ok, output, error) = match action.as_str() {
+        "open_url" => {
+            if !target.starts_with("http://") && !target.starts_with("https://") {
+                (false, String::new(), "not an http(s) URL".into())
+            } else if !snapshot.autonomy.open_urls {
+                (
+                    false,
+                    String::new(),
+                    "opening URLs is disabled in Settings".into(),
+                )
+            } else {
+                match open::that(&target) {
+                    Ok(_) => (true, String::new(), String::new()),
+                    Err(e) => (false, String::new(), e.to_string()),
+                }
+            }
+        }
+        "open_path" => {
+            if !snapshot.autonomy.open_paths {
+                (
+                    false,
+                    String::new(),
+                    "opening paths is disabled in Settings".into(),
+                )
+            } else if !std::path::Path::new(&target).exists() {
+                (false, String::new(), "path does not exist".into())
+            } else {
+                match open::that(&target) {
+                    Ok(_) => (true, String::new(), String::new()),
+                    Err(e) => (false, String::new(), e.to_string()),
+                }
+            }
+        }
+        "run" => {
+            if !snapshot.autonomy.run_commands {
+                (
+                    false,
+                    String::new(),
+                    "running commands is disabled in Settings".into(),
+                )
+            } else {
+                let cwd = snapshot
+                    .watched_folder
+                    .clone()
+                    .filter(|f| !f.trim().is_empty())
+                    .or_else(|| {
+                        std::env::var("USERPROFILE")
+                            .or_else(|_| std::env::var("HOME"))
+                            .ok()
+                    });
+                run_shell_command(&target, cwd).await
+            }
+        }
+        _ => (false, String::new(), format!("unknown action: {action}")),
+    };
+
+    // the thread keeps the receipt — every OS action is visible in the chat
+    let receipt = serde_json::json!({
+        "action": action,
+        "target": target,
+        "ok": ok,
+        "output": clip(&output, 2000),
+        "error": error,
+    });
+    if let Ok(mid) = state.db.insert_chat_message_typed(
+        conversation_id,
+        "assistant",
+        &receipt.to_string(),
+        None,
+        0,
+        "ok",
+        "action",
+        None,
+    ) {
+        if let Ok(rec) = state.db.get_chat_message(mid) {
+            let _ = app.emit("entity://chat/message", &rec);
+        }
+    }
+    let _ = state.db.insert_event(
+        if ok { "info" } else { "warn" },
+        "sys_action",
+        &format!("{action}: {}", clip(&target, 120)),
+    );
+
+    Ok(SysExecuteResult {
+        ok,
+        action,
+        target,
+        output,
+        error,
+    })
 }
 
 // ---------- updates (over-the-air) ----------

@@ -5,10 +5,8 @@
 
   const nav = [
     { id: "chat", label: () => t("nav_chat"), icon: "✷" },
-    { id: "dashboard", label: () => t("nav_dashboard"), icon: "◈" },
-    { id: "missions", label: () => t("nav_missions"), icon: "◎" },
-    { id: "memory", label: () => t("nav_memory"), icon: "❖" },
     { id: "reports", label: () => t("nav_reports"), icon: "▤" },
+    { id: "memory", label: () => t("nav_memory"), icon: "❖" },
     { id: "activity", label: () => t("nav_activity"), icon: "≡" },
     { id: "settings", label: () => t("nav_settings"), icon: "⚙" },
   ];

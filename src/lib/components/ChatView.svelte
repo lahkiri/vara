@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, chat, streamingNow, lastMissionProposal, newConversation, openConversation, deleteConversation, sendMessage, stopStreaming, stripMissionBlock } from "../state.svelte";
+  import { app, chat, streamingNow, lastMissionProposal, newConversation, openConversation, deleteConversation, sendMessage, stopStreaming, stripProtocolBlocks, startMissionFromChat, executeSysAction, dismissSysActions } from "../state.svelte";
   import { t } from "../i18n.svelte";
   import { api } from "../api";
   import { mdToHtml } from "../md";
@@ -19,7 +19,7 @@
   ]);
 
   function html(md: string): string {
-    return mdToHtml(stripMissionBlock(md));
+    return mdToHtml(stripProtocolBlocks(md));
   }
 
   async function send(text: string): Promise<void> {
@@ -48,27 +48,65 @@
 
   async function turnIntoMission(goal: string, messageId: number) {
     proposalDone = messageId;
-    const defaults = app.settings?.mission_defaults ?? { budget_tokens: 30000, max_steps: 14 };
-    try {
-      await api.startMission(goal, defaults.budget_tokens, defaults.max_steps);
-      app.view = "missions";
-    } catch {
-      chat.error = "…";
-    }
+    await startMissionFromChat(goal);
   }
 
   function timeLabel(ts: string): string {
     return ts.split(" ").slice(-1)[0] ?? ts;
   }
 
-  // quick-ask handoff from the dashboard hero
-  $effect(() => {
-    const q = chat.pendingQuestion;
-    if (q) {
-      chat.pendingQuestion = "";
-      void send(q);
-    }
-  });
+  // ---------- card payloads ----------
+
+  interface MissionCard {
+    goal: string;
+    mission_id: number;
+  }
+  function missionCard(m: { content: string }): MissionCard | null {
+    try {
+      const v = JSON.parse(m.content);
+      if (typeof v?.goal === "string" && typeof v?.mission_id === "number") {
+        return { goal: v.goal, mission_id: v.mission_id };
+      }
+    } catch { /* legacy rows */ }
+    return null;
+  }
+
+  interface ActionCard {
+    action: string;
+    target: string;
+    ok: boolean;
+    output: string;
+    error: string;
+  }
+  function actionCard(m: { content: string }): ActionCard | null {
+    try {
+      const v = JSON.parse(m.content);
+      if (typeof v?.action === "string" && typeof v?.target === "string") {
+        return {
+          action: v.action,
+          target: v.target,
+          ok: Boolean(v.ok),
+          output: typeof v.output === "string" ? v.output : "",
+          error: typeof v.error === "string" ? v.error : "",
+        };
+      }
+    } catch { /* ignore */ }
+    return null;
+  }
+
+  function actionLabel(a: string): string {
+    if (a === "open_url") return t("action_open_url");
+    if (a === "open_path") return t("action_open_path");
+    return t("action_run");
+  }
+
+  function statusLabel(s: string): string {
+    if (s === "running") return t("status_running");
+    if (s === "completed") return t("status_completed");
+    if (s === "failed") return t("status_failed");
+    if (s === "cancelled") return t("status_cancelled");
+    return s;
+  }
 </script>
 
 <div class="flex h-[calc(100vh-2rem)] mx-auto max-w-6xl gap-0 overflow-hidden rounded-2xl card !p-0">
@@ -113,7 +151,7 @@
       <div class="min-w-0">
         <div class="font-bold text-sm truncate">{active?.title || t("chat_new")}</div>
         {#if active?.mission_id}
-          <button class="text-[11px] text-[var(--accent)]" onclick={() => (app.view = "missions")}>
+          <button class="text-[11px] text-[var(--accent)]" onclick={() => (app.view = "reports")}>
             ▤ {t("chat_linked_report")} — #{active.mission_id}
           </button>
         {/if}
@@ -143,7 +181,60 @@
       {:else}
         <div class="flex flex-col gap-4">
           {#each chat.messages as m (m.id)}
-            {#if m.role === "user"}
+            {#if m.kind === "mission"}
+              {@const card = missionCard(m)}
+              {#if card}
+                <!-- live mission card inside the thread -->
+                <div class="flex justify-center fade-up">
+                  <div class="mission-card w-full max-w-xl">
+                    <div class="flex items-center gap-2 mb-2">
+                      <span class="mission-card-icon">✦</span>
+                      <span class="text-[11px] font-bold tracking-wide text-[var(--accent)]">{t("mission_live")}</span>
+                      <span class="chip !text-[10px] !py-0 ms-auto {chat.liveMissions[card.mission_id]?.status === 'completed' ? 'border-[var(--ok)] text-[var(--ok)]' : chat.liveMissions[card.mission_id]?.status === 'failed' || chat.liveMissions[card.mission_id]?.status === 'cancelled' ? 'border-[var(--bad)] text-[var(--bad)]' : 'border-[var(--accent)] text-[var(--accent)]'}">
+                        {statusLabel(chat.liveMissions[card.mission_id]?.status ?? "running")}
+                      </span>
+                    </div>
+                    <div class="text-sm font-bold leading-6">{card.goal}</div>
+                    {#if chat.liveMissions[card.mission_id]?.status !== "completed" && chat.liveMissions[card.mission_id]?.status !== "failed" && chat.liveMissions[card.mission_id]?.status !== "cancelled"}
+                      <div class="mission-progress mt-3">
+                        <div class="mission-progress-fill" style={"width:" + Math.min(100, ((chat.liveMissions[card.mission_id]?.steps_done ?? 0) / Math.max(1, chat.liveMissions[card.mission_id]?.max_steps ?? 14)) * 100) + "%"}></div>
+                      </div>
+                      <div class="flex items-center gap-2 mt-1.5 text-[10px] text-[var(--muted)]">
+                        <span class="typing !py-0"><i></i><i></i><i></i></span>
+                        <span>{chat.liveMissions[card.mission_id]?.steps_done ?? 0}/{chat.liveMissions[card.mission_id]?.max_steps ?? "?"} {t("mission_steps")} · {chat.liveMissions[card.mission_id]?.spent_tokens ?? 0} tokens</span>
+                      </div>
+                    {:else if chat.liveMissions[card.mission_id]?.status === "completed"}
+                      <button class="btn-ghost !py-1.5 !px-3 text-xs mt-3" onclick={() => (app.view = "reports")}>
+                        ▤ {t("view_reports")}
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+              {/if}
+            {:else if m.kind === "action"}
+              {@const act = actionCard(m)}
+              {#if act}
+                <!-- OS action receipt inside the thread -->
+                <div class="flex justify-center fade-up">
+                  <div class="action-card w-full max-w-xl" class:action-failed={!act.ok}>
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="text-sm">{act.action === "open_url" ? "🌐" : act.action === "open_path" ? "📂" : "⌨"}</span>
+                      <span class="text-xs font-bold">{actionLabel(act.action)}</span>
+                      <span class="chip !text-[10px] !py-0 ms-auto {act.ok ? 'border-[var(--ok)] text-[var(--ok)]' : 'border-[var(--bad)] text-[var(--bad)]'}">
+                        {act.ok ? t("action_done") : t("action_failed")}
+                      </span>
+                    </div>
+                    <div class="font-mono text-[11px] mt-2 break-all text-[var(--muted)]">{act.target}</div>
+                    {#if act.output}
+                      <pre class="action-output">{act.output}</pre>
+                    {/if}
+                    {#if act.error}
+                      <div class="text-[11px] text-[var(--bad)] mt-1">{act.error}</div>
+                    {/if}
+                  </div>
+                </div>
+              {/if}
+            {:else if m.role === "user"}
               <div class="flex justify-end fade-up">
                 <div class="bubble bubble-user">
                   <div class="text-[10px] opacity-60 mb-1 text-end">{t("chat_you")}</div>
@@ -190,6 +281,19 @@
                       <button class="btn !py-1.5 !px-3 text-xs" onclick={() => turnIntoMission(lastMissionProposal()!.goal, m.id)}>
                         ✦ {t("chat_make_mission")}
                       </button>
+                    </div>
+                  {/if}
+                  {#if chat.pendingSys[m.id]?.length}
+                    <div class="mission-proposal p-3 mt-2" style="border-style:solid">
+                      <div class="text-[11px] font-bold text-[var(--warn)] mb-2">⚠ {t("sys_approval_title")}</div>
+                      {#each chat.pendingSys[m.id] as a (a.target + a.action)}
+                        <div class="flex items-center gap-2 flex-wrap py-1">
+                          <span class="text-xs">{actionLabel(a.action)}:</span>
+                          <span class="font-mono text-[11px] break-all flex-1 min-w-30">{a.target}</span>
+                          <button class="btn !py-1 !px-3 text-[11px]" onclick={() => void executeSysAction(m.id, a)}>{t("sys_execute")}</button>
+                          <button class="btn-ghost !py-1 !px-3 text-[11px]" onclick={() => dismissSysActions(m.id)}>{t("sys_dismiss")}</button>
+                        </div>
+                      {/each}
                     </div>
                   {/if}
                 </div>

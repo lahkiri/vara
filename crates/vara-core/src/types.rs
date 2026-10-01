@@ -200,6 +200,9 @@ pub struct Conversation {
 }
 
 /// One stored chat message (user or assistant side).
+/// `kind` selects how the UI renders it:
+/// "text" (default) | "mission" (live mission card, content = JSON) |
+/// "action" (OS action result card, content = JSON).
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatMessageRecord {
     pub id: i64,
@@ -210,6 +213,23 @@ pub struct ChatMessageRecord {
     pub tokens: i64,
     pub status: String, // "streaming" | "ok" | "stopped" | "error"
     pub created_at: String,
+    #[serde(default = "default_message_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub mission_id: Option<i64>,
+}
+
+fn default_message_kind() -> String {
+    "text".into()
+}
+
+/// An OS action Vara proposes from inside the chat ([[sys]] protocol).
+/// Execution always passes the autonomy policy — the model never runs
+/// anything by itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SysAction {
+    pub action: String, // "open_url" | "open_path" | "run"
+    pub target: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -243,10 +263,12 @@ fn default_temperature() -> f32 {
 
 impl Default for ProviderConfig {
     fn default() -> Self {
+        // Shipped preset: an OpenAI-compatible endpoint with an empty key.
+        // The key never ships with the app — the owner enters theirs once.
         Self {
-            base_url: String::new(),
+            base_url: "https://ktai.koyeb.app/v1".into(),
             api_key: String::new(),
-            model: String::new(),
+            model: "deepseek-ai/deepseek-v4.1-flash".into(),
             temperature: default_temperature(),
         }
     }
@@ -262,6 +284,12 @@ pub struct AutonomyConfig {
     pub open_urls: bool,
     pub open_paths: bool,
     pub autostart: bool,
+    /// When Vara proposes a mission from inside the chat, start it without
+    /// asking (read-only research; costs are budget-capped). One tap in the
+    /// thread still exists as fallback when Vara is busy.
+    pub auto_start_missions: bool,
+    /// Whether the [[sys]] "run" action is available at all.
+    pub run_commands: bool,
 }
 
 impl Default for AutonomyConfig {
@@ -274,6 +302,8 @@ impl Default for AutonomyConfig {
             open_urls: true,
             open_paths: true,
             autostart: false,
+            auto_start_missions: true,
+            run_commands: true,
         }
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "vara"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Vara — a persistent autonomous entity on your desktop"
 license = "MIT"
@@ -22,6 +22,6 @@ tauri-plugin-updater = "2"
 vara-core = { path = "../crates/vara-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["time", "sync"] }
+tokio = { version = "1", features = ["time", "sync", "process", "rt", "macros"] }
 open = "5"
 notify = "7"

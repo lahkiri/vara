@@ -15,6 +15,8 @@ export interface AutonomyConfig {
   open_urls: boolean;
   open_paths: boolean;
   autostart: boolean;
+  auto_start_missions: boolean;
+  run_commands: boolean;
 }
 
 export interface MissionDefaults {
@@ -94,6 +96,22 @@ export interface ChatMessageRecord {
   tokens: number;
   status: string; // "streaming" | "ok" | "stopped" | "error"
   created_at: string;
+  kind: string; // "text" | "mission" | "action"
+  mission_id: number | null;
+}
+
+/// An OS action Vara proposes from inside the chat ([[sys]] protocol).
+export interface SysAction {
+  action: string; // "open_url" | "open_path" | "run"
+  target: string;
+}
+
+export interface SysExecuteResult {
+  ok: boolean;
+  action: string;
+  target: string;
+  output: string;
+  error: string;
 }
 
 export interface SendChatStart {
@@ -110,6 +128,8 @@ export interface ChatDonePayload {
   model: string | null;
   status: string;
   mission_goal: string | null;
+  mission_started: number | null;
+  sys_actions: SysAction[];
   error: string | null;
 }
 

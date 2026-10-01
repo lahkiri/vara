@@ -12,6 +12,8 @@ import type {
   Conversation,
   ChatMessageRecord,
   SendChatStart,
+  SysAction,
+  SysExecuteResult,
   UpdateInfo,
 } from "./types";
 import { mockApi } from "./mock";
@@ -26,6 +28,8 @@ export type {
   Conversation,
   ChatMessageRecord,
   SendChatStart,
+  SysAction,
+  SysExecuteResult,
   UpdateInfo,
 };
 
@@ -115,6 +119,10 @@ const realApi = {
   sendChat: (conversationId: number, content: string) =>
     invoke<SendChatStart>("send_chat", { conversationId, content }),
   stopChat: (conversationId: number) => invoke<void>("stop_chat", { conversationId }),
+  startMissionInConversation: (conversationId: number, goal: string) =>
+    invoke<number>("start_mission_in_conversation", { conversationId, goal }),
+  sysExecute: (conversationId: number, action: string, target: string) =>
+    invoke<SysExecuteResult>("sys_execute", { conversationId, action, target }),
 
   // updates
   checkForUpdate: () => invoke<UpdateInfo | null>("check_for_update"),

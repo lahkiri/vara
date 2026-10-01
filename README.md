@@ -23,6 +23,22 @@
 
 ---
 
+## What's new in v0.3.0 — The entity acts
+
+- **Missions live inside the chat.** No separate launcher: ask for a goal and
+  Vara chats with you *and* starts the mission in the same thread — a live
+  card streams its progress, and the report lands back into the conversation,
+  grounding every follow-up.
+- **Vara controls the machine, behind policy.** Open URLs/paths, run shell
+  commands — each proposal is gated by the autonomy settings, `run` always
+  shows an explicit approval card, and every action leaves a visible receipt
+  in the thread.
+- **Protocol-leak fix**: tolerant marker parsing (models mangle
+  `[mission]…{MISSION_CLOSE}`) — raw protocol text can no longer leak into
+  chat bubbles.
+- Signed **over-the-air updates** from v0.2.0 carry on: the app checks
+  GitHub Releases on launch and updates itself.
+
 ## Why Vara exists
 
 Most "AI teammates" answer questions. Vara's job is to **accomplish missions** — and to be

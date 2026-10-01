@@ -12,6 +12,7 @@ import type {
   Conversation,
   ChatMessageRecord,
   SendChatStart,
+  SysExecuteResult,
 } from "./types";
 
 const settings: Settings = {
@@ -31,6 +32,8 @@ const settings: Settings = {
     open_urls: true,
     open_paths: true,
     autostart: false,
+    auto_start_missions: true,
+    run_commands: true,
   },
   mission_defaults: { budget_tokens: 30000, max_steps: 14 },
   watched_folder: null,
@@ -160,11 +163,13 @@ const messages = new Map<number, ChatMessageRecord[]>([
         conversation_id: 1,
         role: "assistant",
         content:
-          "مرحباً! أنا **فارَا** — كيان مستمر يسكن جهازك، لا مساعد يولد مع كل سؤال.\n\nأتذكر ما نجمعه من مهامي، ويمكنني تنفيذ مهام بحثية بمصادر موثقة. اسألني أي شيء، أو اطلب مني بحثاً وأتكفل به.",
+          "مرحباً! أنا **فارَا** — كيان مستمر يسكن جهازك، لا مساعد يولد مع كل سؤال.\n\nأتذكر ما نجمعه من مهامي، وأستطيع أن أبحث وأكتب تقارير موثقة، وأن أفتح روابط وملفات وأمرّر أوامر بموافقتك. حاوِثني أو اطلب.",
         model: "glm-4.6",
         tokens: 64,
         status: "ok",
         created_at: "2026-09-30 22:40",
+        kind: "text",
+        mission_id: null,
       },
       {
         id: 2,
@@ -175,17 +180,21 @@ const messages = new Map<number, ChatMessageRecord[]>([
         tokens: 12,
         status: "ok",
         created_at: "2026-09-30 22:41",
+        kind: "text",
+        mission_id: null,
       },
       {
         id: 3,
         conversation_id: 1,
         role: "assistant",
         content:
-          "ثلاثة أشياء جوهرية:\n\n1. **الاستمرارية** — أعيش في شريط المهام حتى بعد إغلاق النافذة، وذاكرتي محلية دائمة.\n2. **العمل الحقيقي** — لست مقتصرة على الكلام؛ أنفّذ مهام بحث تخطط وتبحث وتقرأ وتكتب تقريراً.\n3. **الصدق القابل للفحص** — كل تقرير يمر على مدقق مصادر يتحقق أن كل استشهاد جُلب فعلاً، لا اخترع.\n\nجرّبني: اطلب بحثاً عن أي موضوع يهمك.",
+          "ثلاثة أشياء جوهرية:\n\n1. **الاستمرارية** — أعيش في شريط المهام حتى بعد إغلاق النافذة، وذاكرتي محلية دائمة.\n2. **العمل الحقيقي** — أبحث وأكتب تقارير موثقة، وأتصرف في جهازك ضمن سياساتك.\n3. **الصدق القابل للفحص** — كل تقرير يمر على مدقق مصادر يتحقق أن كل استشهاد جُلب فعلاً، لا اخترع.\n\nكل شيء يحدث هنا في المحادثة: اطلب بحثاً وسترى المهمة تعمل أمامك في هذا الخيط.",
         model: "glm-4.6",
         tokens: 118,
         status: "ok",
         created_at: "2026-09-30 22:41",
+        kind: "text",
+        mission_id: null,
       },
     ],
   ],
@@ -196,12 +205,14 @@ const CANNED: { match: RegExp; reply: string }[] = [
   {
     match: /بحث|قارن|تقرير|research|compare/i,
     reply:
-      "سؤال ممتاز. بناءً على ما أذكره من مهامي السابقة، llama.cpp خيار مثالي للتشغيل المحلي على أجهزة متواضعة، بينما يتفوق vLLM عند توفر ذاكرة كبيرة.\n\nلكن إجابة مؤكدة تحتاج بحثاً حياً بمصادر موثقة — وهذا تخصصي.\n\n[[mission]] قارن بين llama.cpp و vLLM و Ollama في أداء واستهلاك الذاكرة على GPU متواضع، واكتب تقريراً موثقاً بالمصادر [[/mission]]",
+      "سؤال ممتاز. بناءً على ما أذكره من مهامي السابقة، llama.cpp خيار مثالي للتشغيل المحلي على أجهزة متواضعة، بينما يتفوق vLLM عند توفر ذاكرة كبيرة.\n\nلكن إجابة مؤكدة تحتاج بحثاً حياً بمصادر موثقة — وهذا تخصصي، وسأبدأ المهمة الآن وأعرض تقدمها هنا أمامك.\n\n" +
+      "[[" +
+      "mission]] قارن بين llama.cpp و vLLM و Ollama في أداء واستهلاك الذاكرة على GPU متواضع، واكتب تقريراً موثقاً بالمصادر [[/mission]]",
   },
   {
     match: /من انت|من أنت|who are you|identity/i,
     reply:
-      "أنا **فارَا** — كيان مستمر يسكن جهازك.\n\nلست نموذجاً في متصفح: عندي ذاكرة محلية دائمة، وأنفذ مهام بحثية حقيقية تخطط وتقرأ وتكتب تقارير موثقة، وأبقى حاضرة في شريط المهام حتى وأنت لا تنظر.",
+      "أنا **فارَا** — كيان مستمر يسكن جهازك.\n\nلست نموذجاً في متصفح: عندي ذاكرة محلية دائمة، وأنفذ مهام بحثية حقيقية، وأستطيع التحكم بالجهاز ضمن سياساتك — وكل شيء يحدث هنا في المحادثة.",
   },
   {
     match: /.*/,
@@ -239,6 +250,8 @@ async function streamReply(convId: number, assistantId: number, full: string): P
         model: "glm-4.6 (demo)",
         status: "ok",
         mission_goal: null,
+        mission_started: null,
+        sys_actions: [],
         error: null,
       },
     }),
@@ -335,12 +348,12 @@ export const mockApi: Api = {
     return conv;
   },
   sendChat: async (conversationId: number, content: string): Promise<SendChatStart> => {
-    const user = pushMsg(conversationId, { role: "user", content, model: null, tokens: 8, status: "ok", created_at: "الآن" });
+    const user = pushMsg(conversationId, { role: "user", content, model: null, tokens: 8, status: "ok", created_at: "الآن", kind: "text", mission_id: null });
     if (conversations.find((c) => c.id === conversationId)?.title === "") {
       const c = conversations.find((x) => x.id === conversationId)!;
       c.title = content.slice(0, 48);
     }
-    const assistant = pushMsg(conversationId, { role: "assistant", content: "", model: null, tokens: 0, status: "streaming", created_at: "الآن" });
+    const assistant = pushMsg(conversationId, { role: "assistant", content: "", model: null, tokens: 0, status: "streaming", created_at: "الآن", kind: "text", mission_id: null });
     void (async () => {
       await new Promise((r) => setTimeout(r, 700));
       const canned = CANNED.find((c) => c.match.test(content))!;
@@ -349,6 +362,80 @@ export const mockApi: Api = {
     return { conversation_id: conversationId, user_message_id: user.id, assistant_message_id: assistant.id };
   },
   stopChat: async () => {},
+  startMissionInConversation: async (conversationId: number, goal: string): Promise<number> => {
+    const id = missions.length + 1;
+    missions.unshift({
+      id,
+      created_at: "الآن",
+      goal,
+      status: "running",
+      budget_tokens: 30000,
+      spent_tokens: 0,
+      max_steps: 14,
+      steps_done: 0,
+      dimensions: [{ name: "تجريبي", question: "وضع العرض فقط" }],
+      error: null,
+    });
+    const card = pushMsg(conversationId, {
+      role: "assistant",
+      content: JSON.stringify({ goal, mission_id: id }),
+      model: null,
+      tokens: 0,
+      status: "ok",
+      created_at: "الآن",
+      kind: "mission",
+      mission_id: id,
+    });
+    window.dispatchEvent(new CustomEvent("mock:chat/message", { detail: card }));
+    void (async () => {
+      for (let s = 1; s <= 4; s++) {
+        await new Promise((r) => setTimeout(r, 1200));
+        const m = missions.find((x) => x.id === id);
+        if (m) {
+          m.steps_done = s;
+          m.spent_tokens = s * 700;
+        }
+        window.dispatchEvent(
+          new CustomEvent("mock:entity/event", {
+            detail: { type: "mission_update", id, status: "running", steps_done: s, max_steps: 14, spent_tokens: s * 700 },
+          }),
+        );
+      }
+      await new Promise((r) => setTimeout(r, 800));
+      window.dispatchEvent(
+        new CustomEvent("mock:entity/event", {
+          detail: { type: "report_ready", id: reports.length + 1, mission_id: id, verdict: "pass", backed_ratio: 1.0 },
+        }),
+      );
+      const close = pushMsg(conversationId, {
+        role: "assistant",
+        content: "أنهيت المهمة ✅ — التقرير جاهز (توثيق مصادره 100%). التقرير مربوط بهذه المحادثة الآن: اسألني عن أي تفصيل فيه وسأجيب منه مباشرة.",
+        model: "glm-4.6 (demo)",
+        tokens: 42,
+        status: "ok",
+        created_at: "الآن",
+        kind: "text",
+        mission_id: null,
+      });
+      window.dispatchEvent(new CustomEvent("mock:chat/message", { detail: close }));
+    })();
+    return id;
+  },
+  sysExecute: async (conversationId: number, action: string, target: string): Promise<SysExecuteResult> => {
+    const rec = pushMsg(conversationId, {
+      role: "assistant",
+      content: JSON.stringify({ action, target, ok: true, output: "(demo) executed", error: "" }),
+      model: null,
+      tokens: 0,
+      status: "ok",
+      created_at: "الآن",
+      kind: "action",
+      mission_id: null,
+    });
+    window.dispatchEvent(new CustomEvent("mock:chat/message", { detail: rec }));
+    return { ok: true, action, target, output: "(demo) executed", error: "" };
+  },
+
   checkForUpdate: async () => null,
   installUpdate: async () => {},
 };
