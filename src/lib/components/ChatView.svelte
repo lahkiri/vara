@@ -97,6 +97,7 @@
   function actionLabel(a: string): string {
     if (a === "open_url") return t("action_open_url");
     if (a === "open_path") return t("action_open_path");
+    if (a === "screenshot") return t("action_screenshot");
     return t("action_run");
   }
 
@@ -218,7 +219,7 @@
                 <div class="flex justify-center fade-up">
                   <div class="action-card w-full max-w-xl" class:action-failed={!act.ok}>
                     <div class="flex items-center gap-2 flex-wrap">
-                      <span class="text-sm">{act.action === "open_url" ? "🌐" : act.action === "open_path" ? "📂" : "⌨"}</span>
+                      <span class="text-sm">{act.action === "open_url" ? "🌐" : act.action === "open_path" ? "📂" : act.action === "screenshot" ? "🖼" : "⌨"}</span>
                       <span class="text-xs font-bold">{actionLabel(act.action)}</span>
                       <span class="chip !text-[10px] !py-0 ms-auto {act.ok ? 'border-[var(--ok)] text-[var(--ok)]' : 'border-[var(--bad)] text-[var(--bad)]'}">
                         {act.ok ? t("action_done") : t("action_failed")}

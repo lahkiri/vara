@@ -14,12 +14,16 @@ before claims** and **the conversation is the entity**.
    (`MIGRATIONS` in `crates/vara-core/src/db.rs`): never edit an applied
    migration, add `v(N+1)`. The single-connection Mutex writer stays.
 3. **Secrets never enter prompts, logs, or the repo.** API keys live in the
-   local settings file only. Never hardcode keys in code, tests, or CI logs.
+   local settings file or the `VARA_PROVIDER_*` environment variables
+   (`VARA_PROVIDER_API_KEY` / `VARA_PROVIDER_BASE_URL` / `VARA_PROVIDER_MODEL`;
+   env > file, re-applied after every UI save). Never hardcode keys in code,
+   tests, or CI logs.
 4. **The policy engine gates every OS action.** The model can only *propose*
-   actions via the `[[sys]]` protocol; execution happens in the shell
-   (`sys_execute`) after the autonomy settings allow it. `run` always shows an
-   explicit approval card. Never add a code path where model output executes
-   directly.
+   actions via the `[[sys]]` protocol (`open_url` / `open_path` / `run` /
+   `screenshot`); execution happens in the shell (`sys_execute`) after the
+   autonomy settings allow it. `run` and `screenshot` always show an explicit
+   approval card, and screen capture ships OFF (`allow_screenshots: false`).
+   Never add a code path where model output executes directly.
 5. **Chat-first.** Missions are born inside a conversation
    (`start_mission_in_conversation` / auto-start on proposal) and their
    progress, receipts, and reports flow back into the same thread. Do not
@@ -37,8 +41,8 @@ before claims** and **the conversation is the entity**.
 ```sh
 cargo test -p vara-core          # all green
 cargo fmt --all -- --check
-bun install && bun run check     # svelte-check: 0 errors
-bun run build                    # vite build succeeds
+npm install && npm run check     # svelte-check: 0 errors
+npm run build                    # vite build succeeds
 ```
 
 Full desktop compile (`cargo check -p vara`) requires GTK/WebKit on Linux and

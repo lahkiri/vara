@@ -4915,8 +4915,9 @@ dependencies = [
 
 [[package]]
 name = "vara"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
+ "chrono",
  "notify",
  "open",
  "serde",
@@ -4933,7 +4934,7 @@ dependencies = [
 
 [[package]]
 name = "vara-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "form_urlencoded",
  "futures-util",

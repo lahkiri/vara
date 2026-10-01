@@ -89,6 +89,9 @@ pub fn save_settings(
     s.autonomy = new_settings.autonomy;
     s.mission_defaults = new_settings.mission_defaults;
     s.watched_folder = new_settings.watched_folder;
+    // env > file: a VARA_PROVIDER_* injected key survives UI saves and never
+    // gets persisted into settings.json (secrets discipline).
+    crate::settings::apply_env_overrides(&mut s);
 
     let data_dir = app
         .path()
@@ -913,6 +916,111 @@ async fn run_shell_command(target: &str, cwd: Option<String>) -> (bool, String, 
     }
 }
 
+/// Captures the full screen into the app-data `screenshots` folder using the
+/// OS's own tooling — no extra native dependencies, no driver installs:
+/// Windows: PowerShell + System.Drawing (built into every Windows 10/11),
+/// macOS: `screencapture`, Linux: gnome-screenshot / ImageMagick import / scrot.
+/// Returns `(ok, output, error)` where output carries the saved file path.
+async fn capture_screen(app: &AppHandle) -> (bool, String, String) {
+    use tokio::process::Command;
+
+    let dir = match app.path().app_data_dir().map(|d| d.join("screenshots")) {
+        Ok(d) => d,
+        Err(e) => return (false, String::new(), format!("data dir: {e}")),
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return (false, String::new(), format!("mkdir: {e}"));
+    }
+    let stamp = chrono::Local::now().format("Vara-%Y%m%d-%H%M%S");
+    let path = dir.join(format!("{stamp}.png"));
+    let path_str = path.display().to_string();
+
+    #[cfg(target_os = "windows")]
+    let script = format!(
+        "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; \
+         $b=[System.Windows.Forms.SystemInformation]::VirtualScreen; \
+         $bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height; \
+         $g=[System.Drawing.Graphics]::FromImage($bmp); \
+         $g.CopyFromScreen($b.X,$b.Y,0,0,$bmp.Size); \
+         $bmp.Save('{path_str}'); $g.Dispose(); $bmp.Dispose()"
+    );
+
+    let result = if cfg!(target_os = "windows") {
+        #[cfg(target_os = "windows")]
+        {
+            Command::new("powershell")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                .kill_on_drop(true)
+                .output()
+                .await
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            unreachable!()
+        }
+    } else if cfg!(target_os = "macos") {
+        Command::new("screencapture")
+            .args(["-x", &path_str])
+            .kill_on_drop(true)
+            .output()
+            .await
+    } else {
+        // Linux: try the common capture tools in order.
+        let mut last_err = String::from("no screen capture tool found");
+        let mut out = None;
+        for (prog, args) in [
+            ("gnome-screenshot", vec!["-f".to_string(), path_str.clone()]),
+            (
+                "import",
+                vec!["-window".to_string(), "root".to_string(), path_str.clone()],
+            ),
+            ("scrot", vec![path_str.clone()]),
+        ] {
+            match Command::new(prog)
+                .args(&args)
+                .kill_on_drop(true)
+                .output()
+                .await
+            {
+                Ok(o) if o.status.success() => {
+                    out = Some(Ok(o));
+                    break;
+                }
+                Ok(o) => {
+                    last_err = format!(
+                        "{prog} failed: {}",
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    )
+                }
+                Err(e) => last_err = format!("{prog}: {e}"),
+            }
+        }
+        match out {
+            Some(r) => r,
+            None => return (false, String::new(), last_err),
+        }
+    };
+
+    match result {
+        Err(e) => (false, String::new(), e.to_string()),
+        Ok(o) if !o.status.success() => (
+            false,
+            String::new(),
+            format!(
+                "capture failed: {}",
+                clip(String::from_utf8_lossy(&o.stderr).trim(), 300)
+            ),
+        ),
+        Ok(_) => {
+            if path.exists() {
+                (true, path_str, String::new())
+            } else {
+                (false, String::new(), "capture produced no file".into())
+            }
+        }
+    }
+}
+
 /// Runs one OS action Vara proposed in the chat. The autonomy policy is
 /// enforced HERE, in the shell — the model never executes anything itself.
 /// Every receipt lands in the thread as an action card.
@@ -981,6 +1089,19 @@ pub async fn sys_execute(
                             .ok()
                     });
                 run_shell_command(&target, cwd).await
+            }
+        }
+        "screenshot" => {
+            // Privacy-sensitive: ships OFF, and even when enabled the chat
+            // shows the explicit approval card before this arm is reached.
+            if !snapshot.autonomy.allow_screenshots {
+                (
+                    false,
+                    String::new(),
+                    "screen capture is disabled in Settings".into(),
+                )
+            } else {
+                capture_screen(&app).await
             }
         }
         _ => (false, String::new(), format!("unknown action: {action}")),

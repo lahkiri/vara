@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="#download"><img alt="platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue"></a>
+  <a href="#download"><img alt="platform" src="https://img.shields.io/badge/platform-Windows%20x64-blue"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="local-first" src="https://img.shields.io/badge/state-local%20%26%20portable-informational">
   <img alt="provenance" src="https://img.shields.io/badge/reports-provenance--gated-8b8cf0">
@@ -22,6 +22,17 @@
 <p align="center">العربية؟ اقرأ <a href="README.ar.md">README بالعربية</a></p>
 
 ---
+
+## What's new in v0.4.0 — The entity sees the screen
+
+- **`screenshot` action (first step into computer use).** Vara can propose
+  capturing the screen from inside the chat: you tap the approval card, the
+  capture runs through the OS's own tooling, and the PNG path lands in the
+  thread as a receipt. Ships OFF (`allow_screenshots`), every shot needs an
+  explicit tap, and the model never sees the image.
+- **Provider via environment variables** — `VARA_PROVIDER_API_KEY`,
+  `VARA_PROVIDER_BASE_URL`, `VARA_PROVIDER_MODEL` override the settings file
+  (env > file, survives Settings saves). The key can stay out of disk entirely.
 
 ## What's new in v0.3.0 — The entity acts
 

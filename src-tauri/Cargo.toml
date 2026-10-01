@@ -1,6 +1,6 @@
 [package]
 name = "vara"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Vara — a persistent autonomous entity on your desktop"
 license = "MIT"
@@ -25,3 +25,4 @@ serde_json = "1"
 tokio = { version = "1", features = ["time", "sync", "process", "rt", "macros"] }
 open = "5"
 notify = "7"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

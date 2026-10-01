@@ -177,6 +177,10 @@
           <input type="checkbox" bind:checked={draft.autonomy.run_commands} class="accent-[var(--accent)] w-4 h-4" />
           {t("run_commands")}
         </label>
+        <label class="flex items-center gap-3">
+          <input type="checkbox" bind:checked={draft.autonomy.allow_screenshots} class="accent-[var(--accent)] w-4 h-4" />
+          {t("allow_screenshots")}
+        </label>
       </div>
       <label class="block text-xs text-[var(--muted)] mt-4">
         {t("watched_folder")}

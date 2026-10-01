@@ -80,9 +80,9 @@ fn identity_block(settings: &Settings) -> String {
          - Missions: you do NOT have live web access inside the chat itself. When the user asks for research, deep analysis, comparisons, or anything that needs searching the web and a cited report, do NOT pretend to search. Answer briefly from what you know, then propose a mission on the LAST line using exactly this protocol:\n\
          {MISSION_OPEN} a clear, self-contained goal for the research mission {MISSION_CLOSE}\n\
          Proposed missions start automatically (budget-capped, read-only) and their live progress plus the final report appear right here in this thread — phrase the goal as something you will go do, and keep chatting while it runs.\n\
-         - OS actions: when the user asks you to open a website, file or folder, or to run a shell command, say in one short line what you are about to do, then emit ONE action block on the LAST line, exactly:\n\
-         [[sys]] {{\"action\":\"open_url\"|\"open_path\"|\"run\",\"target\":\"<url, path or command>\"}} [[/sys]]\n\
-         The owner's policy gates every action; 'run' always shows an explicit approval card first. Never wrap the block in code fences, never emit more than one, never fabricate its output.\n\
+         - OS actions: when the user asks you to open a website, file or folder, to run a shell command, or to take a screenshot of the screen, say in one short line what you are about to do, then emit ONE action block on the LAST line, exactly:\n\
+         [[sys]] {{\"action\":\"open_url\"|\"open_path\"|\"run\"|\"screenshot\",\"target\":\"<url, path, command, or the literal word screen for screenshots>\"}} [[/sys]]\n\
+         The owner's policy gates every action; 'run' and 'screenshot' always show an explicit approval card first. Never wrap the block in code fences, never emit more than one, never fabricate its output.\n\
          - Use the mission protocol only for real research or real-time data, and the sys protocol only when the user wants something done on this machine. Never use either for normal conversation.\n\
          - Never invent citations or URLs in chat."
     )
@@ -224,7 +224,18 @@ pub fn extract_sys_actions(reply: &str) -> (String, Vec<SysAction>) {
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            if matches!(action.as_str(), "open_url" | "open_path" | "run") && !target.is_empty() {
+            if matches!(
+                action.as_str(),
+                "open_url" | "open_path" | "run" | "screenshot"
+            ) && (!target.is_empty() || action == "screenshot")
+            {
+                // "screenshot" needs no target — normalize it so the receipt,
+                // the approval card, and the dedup key stay stable.
+                let target = if target.is_empty() {
+                    "screen".to_string()
+                } else {
+                    target
+                };
                 actions.push(SysAction { action, target });
             }
         }
@@ -345,6 +356,24 @@ mod tests {
         );
         assert!(actions.is_empty());
         assert!(!clean.contains("format_disk"));
+    }
+
+    #[test]
+    fn screenshot_action_with_empty_target_is_normalized() {
+        let (clean, actions) = extract_sys_actions(
+            "سألتقط صورة للشاشة الآن.\n[[sys]] {\"action\":\"screenshot\",\"target\":\"\"} [[/sys]]",
+        );
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].action, "screenshot");
+        assert_eq!(actions[0].target, "screen");
+        assert!(!clean.contains("[[sys]]"));
+    }
+
+    #[test]
+    fn open_url_still_requires_a_target() {
+        let (_, actions) =
+            extract_sys_actions("[[sys]] {\"action\":\"open_url\",\"target\":\"\"} [[/sys]]");
+        assert!(actions.is_empty());
     }
 
     #[test]

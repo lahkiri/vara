@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.4.0 — The entity sees the screen (2026-10-01)
+
+### First step into computer use: `screenshot`
+- New `[[sys]]` action: `{"action":"screenshot","target":"screen"}`. Vara can
+  now propose capturing the screen — the owner taps the approval card, the
+  shell layer captures via the OS's own tooling (Windows: PowerShell +
+  System.Drawing; macOS: `screencapture`; Linux: gnome-screenshot / ImageMagick
+  / scrot), and the PNG lands in `app-data/screenshots/` with its path in the
+  receipt. Zero new native dependencies.
+- Privacy posture: ships **OFF** (`allow_screenshots: false`). Even when
+  enabled, every capture still requires the explicit in-chat approval card,
+  leaves a receipt in the thread and an events-table row. The model still
+  cannot see the image — vision grounding is a future, separately-discussed
+  step.
+- New Settings toggle with bilingual labels; core + webview extraction kept in
+  sync and unit-tested (empty target normalizes to `screen`; other actions
+  still require a target).
+
+### Provider via environment variables (dev & test discipline)
+- `VARA_PROVIDER_API_KEY` / `VARA_PROVIDER_BASE_URL` / `VARA_PROVIDER_MODEL`
+  override the settings-file provider at launch. Precedence: env > file, and
+  overrides are re-applied after every UI save — an env-injected key can never
+  be wiped by a Settings save nor leak into `settings.json`.
+
+### Reliability
+- README platform badge corrected to what actually ships today: Windows x64
+  (macOS/Linux packaging remains on the roadmap).
+
 ## v0.3.0 — The entity acts (2026-10-01)
 
 The critique that drove this release: *"where do I chat with the entity — not

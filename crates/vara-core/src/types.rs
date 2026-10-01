@@ -290,6 +290,10 @@ pub struct AutonomyConfig {
     pub auto_start_missions: bool,
     /// Whether the [[sys]] "run" action is available at all.
     pub run_commands: bool,
+    /// Whether Vara may propose capturing the screen ([[sys]] "screenshot").
+    /// Reading the screen is privacy-sensitive, so this ships OFF; even when
+    /// enabled, every capture still shows the explicit approval card.
+    pub allow_screenshots: bool,
 }
 
 impl Default for AutonomyConfig {
@@ -304,6 +308,7 @@ impl Default for AutonomyConfig {
             autostart: false,
             auto_start_missions: true,
             run_commands: true,
+            allow_screenshots: false,
         }
     }
 }
