@@ -274,17 +274,21 @@ fn spawn_mission_runner(app: AppHandle, mission_id: i64, conversation_id: Option
         busy_flag.store(false, Ordering::SeqCst);
 
         if let Some(conv) = conversation_id {
-            let (status, verdict, backed, error) = match &outcome {
-                Ok(o) => (
-                    o.status.clone(),
-                    o.verdict.clone(),
-                    o.backed_ratio,
-                    o.status.clone(),
-                ),
-                Err(e) => ("failed".into(), None, None, e.to_string()),
+            let (status, verdict, backed) = match &outcome {
+                Ok(o) => (o.status.clone(), o.verdict.clone(), o.backed_ratio),
+                Err(_) => ("failed".into(), None, None),
+            };
+            // the honest closing text carries the REAL failure reason
+            let error_text = match &outcome {
+                Ok(_) => db
+                    .get_mission(mission_id)
+                    .ok()
+                    .and_then(|m| m.error)
+                    .unwrap_or_else(|| status.clone()),
+                Err(e) => e.to_string(),
             };
             let error_ref = if status == "failed" {
-                Some(error.as_str())
+                Some(error_text.as_str())
             } else {
                 None
             };
