@@ -73,6 +73,28 @@ pub struct ActionRecord {
     pub summary: String,
 }
 
+/// One auditable line of the Action Journal: what the entity did, at what
+/// grant level, with what evidence. The journal IS the audit log and the
+/// memory of her deeds (Muse-style inspectability, on a real desktop).
+#[derive(Debug, Clone, Serialize)]
+pub struct CuJournalEntry {
+    pub id: i64,
+    pub ts: String,
+    pub conversation_id: Option<i64>,
+    pub seq_index: i64,
+    pub op: String,
+    pub grant_level: String,
+    pub target: String,
+    pub ok: bool,
+    pub dry_run: bool,
+    pub active: Option<String>,
+    pub before_ref: Option<String>,
+    pub after_ref: Option<String>,
+    pub check_note: Option<String>,
+    pub ms: i64,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ReportRecord {
     pub id: i64,
@@ -294,6 +316,16 @@ pub struct AutonomyConfig {
     /// Reading the screen is privacy-sensitive, so this ships OFF; even when
     /// enabled, every capture still shows the explicit approval card.
     pub allow_screenshots: bool,
+    /// Whether Vara may propose full computer-use sequences ([[sys]]
+    /// "computer_use"): see→act→confirm flows driving mouse/keyboard/windows
+    /// through the ActLoop. Ships OFF — this is the entity's hands, gated by
+    /// the owner. When enabled, L0/L1 steps run under the policy, while any
+    /// L2 op (destructive close) still requires its explicit unlock AND the
+    /// chat approval card.
+    pub allow_computer_use: bool,
+    /// L2 unlock for computer-use sequences: window/app close operations.
+    /// Without it, close ops stay dry runs with a preview — by design.
+    pub computer_use_allow_close: bool,
 }
 
 impl Default for AutonomyConfig {
@@ -309,6 +341,8 @@ impl Default for AutonomyConfig {
             auto_start_missions: true,
             run_commands: true,
             allow_screenshots: false,
+            allow_computer_use: false,
+            computer_use_allow_close: false,
         }
     }
 }

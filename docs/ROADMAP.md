@@ -10,13 +10,21 @@ Scope discipline: each release ships only what we are confident in.
 
 ## v0.2 — the pre-registered campaign
 - [ ] Run the 24-run four-arm campaign (A/C/B/D × m1/m2 × 3) with
-      `harness v2` + `aggregate_v2.mjs` once an API budget is allocated
+      `scripts/vara_harness_v2.mjs` (restored in v0.5.0) + `aggregate_v2.mjs`
+      once an API budget is allocated
 - [ ] Apply frozen rules R1/R2/R3 → the outcome directly shapes v0.3:
       - R1 decides whether *dynamic parallel organization* enters the product
         or Phase 2 becomes "single agent + independent verifier"
       - R2 decides whether the clean-context writer becomes a permanent
         built-in component (it already is for reports; R2 extends it)
 - [ ] Publish the campaign artifacts in `docs/experiments/v2-runs/`
+
+## v0.5+ — computer use hardening (shipped v0.5.0, extending)
+- [ ] Windows CI run of the sidecar (`vara-cu` via PyInstaller) against the
+      harness scenarios
+- [ ] UIA two-tier perception (widget tree over pixel OCR)
+- [ ] Windows.Media.Ocr integration in the Rust-native vision port
+- [ ] Secret vault injection (type from vault, never through model context)
 
 ## v0.3 — deeper system integration
 - [ ] Scheduled missions (cron-like) + mission chains

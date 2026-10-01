@@ -20,10 +20,15 @@ before claims** and **the conversation is the entity**.
    tests, or CI logs.
 4. **The policy engine gates every OS action.** The model can only *propose*
    actions via the `[[sys]]` protocol (`open_url` / `open_path` / `run` /
-   `screenshot`); execution happens in the shell (`sys_execute`) after the
-   autonomy settings allow it. `run` and `screenshot` always show an explicit
-   approval card, and screen capture ships OFF (`allow_screenshots: false`).
-   Never add a code path where model output executes directly.
+   `screenshot` / `computer_use`); execution happens in the shell
+   (`sys_execute` / `run_computer_use`) after the autonomy settings allow it.
+   `run`, `screenshot` and `computer_use` always show an explicit approval
+   card; screen capture and computer use ship OFF (`allow_screenshots: false`,
+   `allow_computer_use: false`), and destructive L2 ops additionally require
+   `computer_use_allow_close`. The ActLoop structurally refuses ungrounded
+   coordinates and dry-runs destructive ops — never weaken those guards to
+   "make a task finish". Never add a code path where model output executes
+   directly.
 5. **Chat-first.** Missions are born inside a conversation
    (`start_mission_in_conversation` / auto-start on proposal) and their
    progress, receipts, and reports flow back into the same thread. Do not

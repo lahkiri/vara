@@ -181,6 +181,16 @@
           <input type="checkbox" bind:checked={draft.autonomy.allow_screenshots} class="accent-[var(--accent)] w-4 h-4" />
           {t("allow_screenshots")}
         </label>
+        <label class="flex items-center gap-3">
+          <input type="checkbox" bind:checked={draft.autonomy.allow_computer_use} class="accent-[var(--accent)] w-4 h-4" />
+          {t("allow_computer_use")}
+        </label>
+        {#if draft.autonomy.allow_computer_use}
+          <label class="flex items-center gap-3 ms-7 text-xs">
+            <input type="checkbox" bind:checked={draft.autonomy.computer_use_allow_close} class="accent-[var(--accent)] w-4 h-4" />
+            {t("computer_use_allow_close")}
+          </label>
+        {/if}
       </div>
       <label class="block text-xs text-[var(--muted)] mt-4">
         {t("watched_folder")}

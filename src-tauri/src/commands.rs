@@ -1024,6 +1024,129 @@ async fn capture_screen(app: &AppHandle) -> (bool, String, String) {
 /// Runs one OS action Vara proposed in the chat. The autonomy policy is
 /// enforced HERE, in the shell — the model never executes anything itself.
 /// Every receipt lands in the thread as an action card.
+
+/// The entity's hands: validate → policy-gate → run the ActLoop against the
+/// MCP sidecar → journal every step. Returns (ok, output_json, error).
+fn run_computer_use(
+    state: &AppState,
+    conversation_id: i64,
+    sequence_json: &str,
+) -> std::result::Result<(bool, String, String), String> {
+    use vara_core::computer_use::{
+        ActLoop, ComputerUseAdapter, GrantLevel, LoopPolicy, SidecarComputerUse,
+    };
+
+    let seq = vara_core::computer_use::CuSequence::parse(sequence_json)
+        .map_err(|e| format!("invalid sequence: {e}"))?;
+
+    let snapshot = state.settings_snapshot();
+    let policy = LoopPolicy {
+        max_grant: if snapshot.autonomy.computer_use_allow_close {
+            GrantLevel::L2
+        } else {
+            GrantLevel::L1
+        },
+        ..Default::default()
+    };
+
+    // Policy gate BEFORE anything runs — the approval card already asked the
+    // owner at the chat level; this is the hard structural stop.
+    {
+        let mut probe_adapter = NullAdapter;
+        let probe = ActLoop::new(&mut probe_adapter, policy);
+        if let Err(e) = probe.check_policy(&seq) {
+            return Ok((false, String::new(), e));
+        }
+    }
+
+    let sidecar_cmd = std::env::var("VARA_CU_SIDECAR")
+        .map_err(|_| {
+            "computer-use sidecar not configured — set VARA_CU_SIDECAR to the bundled \
+             vara-cu command (Windows) or enable the mock runner"
+                .to_string()
+        })?
+        .trim()
+        .to_string();
+
+    let mut adapter: SidecarComputerUse =
+        SidecarComputerUse::spawn(&sidecar_cmd).map_err(|e| format!("sidecar unavailable: {e}"))?;
+
+    let mut loop_ = ActLoop::new(&mut adapter, policy);
+    let report = loop_.run(&seq);
+
+    // Journal every executed step — the audit log AND the entity's memory.
+    for step in &report.steps {
+        let _ = state.db.insert_cu_step(
+            Some(conversation_id),
+            step.index,
+            &step.op,
+            step.grant.as_str(),
+            "",
+            step.ok,
+            step.dry_run,
+            step.result.active.as_deref(),
+            step.result.before_path.as_deref(),
+            step.result.path.as_deref(),
+            step.result.check.as_deref(),
+            step.result.ms,
+            step.result.error.as_deref(),
+        );
+    }
+    let _ = state.db.insert_event(
+        if report.completed { "info" } else { "warn" },
+        "computer_use",
+        &format!(
+            "sequence: {} steps, completed={}",
+            report.steps.len(),
+            report.completed
+        ),
+    );
+
+    let steps_json: Vec<serde_json::Value> = report
+        .steps
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "i": s.index,
+                "op": s.op,
+                "grant": s.grant.as_str(),
+                "ok": s.ok,
+                "dry_run": s.dry_run,
+                "active": s.result.active,
+                "check": s.result.check,
+                "error": s.result.error,
+            })
+        })
+        .collect();
+    let output = serde_json::json!({
+        "completed": report.completed,
+        "failed_at": report.failed_at,
+        "error": report.error,
+        "verify_discipline": report.verify_discipline(),
+        "blind_refusals": report.blind_refusals,
+        "evidence": report.evidence_path,
+        "steps": steps_json,
+    })
+    .to_string();
+
+    Ok((
+        report.completed,
+        output,
+        report.error.clone().unwrap_or_default(),
+    ))
+}
+
+/// Placeholder adapter used only for the pre-flight policy probe.
+struct NullAdapter;
+impl ComputerUseAdapter for NullAdapter {
+    fn execute(
+        &mut self,
+        _op: &vara_core::computer_use::CuOp,
+    ) -> vara_core::computer_use::CuResult {
+        vara_core::computer_use::CuResult::fail("null", "probe adapter")
+    }
+}
+
 #[tauri::command]
 pub async fn sys_execute(
     app: AppHandle,
@@ -1102,6 +1225,24 @@ pub async fn sys_execute(
                 )
             } else {
                 capture_screen(&app).await
+            }
+        }
+        "computer_use" => {
+            // The entity's hands: a validated see→act→confirm sequence driven
+            // through the ActLoop. Policy is enforced HERE — the model never
+            // executes anything itself. Destructive close ops need the
+            // explicit L2 unlock; every step lands in the Action Journal.
+            if !snapshot.autonomy.allow_computer_use {
+                (
+                    false,
+                    String::new(),
+                    "computer use is disabled in Settings".into(),
+                )
+            } else {
+                match run_computer_use(&state, conversation_id, &target) {
+                    Ok((ok, output, error)) => (ok, output, error),
+                    Err(e) => (false, String::new(), e),
+                }
             }
         }
         _ => (false, String::new(), format!("unknown action: {action}")),

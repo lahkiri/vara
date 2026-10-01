@@ -18,6 +18,8 @@ export interface AutonomyConfig {
   auto_start_missions: boolean;
   run_commands: boolean;
   allow_screenshots: boolean;
+  allow_computer_use: boolean;
+  computer_use_allow_close: boolean;
 }
 
 export interface MissionDefaults {

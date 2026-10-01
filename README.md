@@ -23,6 +23,24 @@
 
 ---
 
+## What's new in v0.5.0 — The entity has hands
+
+- **Computer use as a native capability.** Vara can now propose whole
+  *verified UI sequences* from inside the chat: see → act → confirm. A
+  validated 16-op operation language (`screenshot`, `focus`, `click`,
+  `click_win`, `type`, `hotkey`, `scroll`, `close_window`…), a structural
+  **ActLoop** that refuses ungrounded coordinates and dry-runs destructive
+  ops, and a **grant ladder L0–L2** under the owner's Settings. Ships OFF.
+- **Action Journal.** Every executed step — grant level, target, before/after
+  evidence — is journaled in SQLite: the entity's deeds are auditable and
+  become her memory.
+- **The harness (both faces).** 9 headless scenario tests grading the
+  see→act→confirm discipline against a deterministic virtual desktop, and the
+  restored pre-registered research harness (`scripts/vara_harness_v2.mjs` +
+  `scripts/check_provenance.mjs`) for the 24-run four-arm campaign.
+- **Skill: `vara-gui-driver-windows`** — the entity's GUI instincts (the
+  commands→GUI fallback rule, transient-UI handling, speed & safety rules).
+
 ## What's new in v0.4.0 — The entity sees the screen
 
 - **`screenshot` action (first step into computer use).** Vara can propose

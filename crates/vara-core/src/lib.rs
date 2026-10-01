@@ -5,6 +5,7 @@
 //! wires this into a desktop app: tray, window, notifications, events.
 
 pub mod chat;
+pub mod computer_use;
 pub mod db;
 pub mod dedup;
 pub mod entity;

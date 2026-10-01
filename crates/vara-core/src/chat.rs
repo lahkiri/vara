@@ -83,6 +83,15 @@ fn identity_block(settings: &Settings) -> String {
          - OS actions: when the user asks you to open a website, file or folder, to run a shell command, or to take a screenshot of the screen, say in one short line what you are about to do, then emit ONE action block on the LAST line, exactly:\n\
          [[sys]] {{\"action\":\"open_url\"|\"open_path\"|\"run\"|\"screenshot\",\"target\":\"<url, path, command, or the literal word screen for screenshots>\"}} [[/sys]]\n\
          The owner's policy gates every action; 'run' and 'screenshot' always show an explicit approval card first. Never wrap the block in code fences, never emit more than one, never fabricate its output.\n\
+         - Computer use (when the owner enabled it): for tasks that require DRIVING the machine's UI — clicking buttons, typing into apps, toggling settings — say in one short line what you are about to do, then emit ONE sequence block on the LAST line, exactly:\n\
+         [[sys]] {{\"action\":\"computer_use\",\"target\":\"<compact JSON sequence>\"}} [[/sys]]\n\
+         A sequence is JSON like {{\"stop_on_error\":true,\"actions\":[{{\"op\":\"screenshot\"}},{{\"op\":\"focus\",\"title\":\"Notepad\"}},{{\"op\":\"type\",\"text\":\"hello\",\"window\":\"Notepad\"}}]}}. Discipline (the loop enforces it — breaking it wastes a turn):\n\
+         1. START every flow with {{\"op\":\"screenshot\"}} — coordinates are grounded in what you SAW.\n\
+         2. Focus the target window before typing into it.\n\
+         3. After mutating ops, VERIFY: end risky flows with {{\"op\":\"verify\"}} or a final screenshot.\n\
+         4. If a capture looks stale (a panel was animating): wait(1.0), re-shoot — never re-click the opener.\n\
+         5. Destructive ops (close_window/close_app) run as DRY RUNS first; the owner confirms.\n\
+         6. At most 20 ops per sequence.\n\
          - Use the mission protocol only for real research or real-time data, and the sys protocol only when the user wants something done on this machine. Never use either for normal conversation.\n\
          - Never invent citations or URLs in chat."
     )
@@ -226,7 +235,7 @@ pub fn extract_sys_actions(reply: &str) -> (String, Vec<SysAction>) {
                 .to_string();
             if matches!(
                 action.as_str(),
-                "open_url" | "open_path" | "run" | "screenshot"
+                "open_url" | "open_path" | "run" | "screenshot" | "computer_use"
             ) && (!target.is_empty() || action == "screenshot")
             {
                 // "screenshot" needs no target — normalize it so the receipt,
@@ -374,6 +383,27 @@ mod tests {
         let (_, actions) =
             extract_sys_actions("[[sys]] {\"action\":\"open_url\",\"target\":\"\"} [[/sys]]");
         assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn computer_use_sequence_is_extracted() {
+        let reply = "سأفتح المفكرة وأكتب فيها الآن.\n[[sys]] {\"action\":\"computer_use\",\"target\":\"{\\\"stop_on_error\\\":true,\\\"actions\\\":[{\\\"op\\\":\\\"screenshot\\\"},{\\\"op\\\":\\\"focus\\\",\\\"title\\\":\\\"Notepad\\\"},{\\\"op\\\":\\\"type\\\",\\\"text\\\":\\\"hello\\\",\\\"window\\\":\\\"Notepad\\\"}]}\"} [[/sys]]";
+        let (clean, actions) = extract_sys_actions(reply);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].action, "computer_use");
+        assert!(actions[0].target.contains("screenshot"));
+        assert!(!clean.contains("[[sys]]"));
+    }
+
+    #[test]
+    fn computer_use_sequence_parses_into_ops() {
+        let (_, actions) = extract_sys_actions(
+            "[[sys]] {\"action\":\"computer_use\",\"target\":\"{\\\"actions\\\":[{\\\"op\\\":\\\"screenshot\\\"},{\\\"op\\\":\\\"focus\\\",\\\"title\\\":\\\"Settings\\\"}]}\"} [[/sys]]",
+        );
+        assert_eq!(actions.len(), 1);
+        let seq = crate::computer_use::CuSequence::parse(&actions[0].target).unwrap();
+        assert_eq!(seq.actions.len(), 2);
+        assert_eq!(seq.max_grant(), crate::computer_use::GrantLevel::L1);
     }
 
     #[test]

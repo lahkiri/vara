@@ -35,6 +35,8 @@ const settings: Settings = {
     auto_start_missions: true,
     run_commands: true,
     allow_screenshots: false,
+    allow_computer_use: false,
+    computer_use_allow_close: false,
   },
   mission_defaults: { budget_tokens: 30000, max_steps: 14 },
   watched_folder: null,

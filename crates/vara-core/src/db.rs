@@ -103,6 +103,29 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE messages ADD COLUMN mission_id INTEGER;
     CREATE INDEX IF NOT EXISTS idx_messages_mission ON messages(mission_id);
     "#,
+    /* v4 — the Action Journal: every computer-use step is evidence, not a
+    log line. before/after artifact refs + grant level make the entity's
+    deeds auditable (Muse-style) and feed her own memory of what she did. */
+    r#"
+    CREATE TABLE IF NOT EXISTS cu_journal(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT NOT NULL DEFAULT (datetime('now')),
+      conversation_id INTEGER,
+      seq_index INTEGER NOT NULL DEFAULT 0,
+      op TEXT NOT NULL,
+      grant_level TEXT NOT NULL DEFAULT 'L0',
+      target TEXT NOT NULL DEFAULT '',
+      ok INTEGER NOT NULL DEFAULT 0,
+      dry_run INTEGER NOT NULL DEFAULT 0,
+      active TEXT,
+      before_ref TEXT,
+      after_ref TEXT,
+      check_note TEXT,
+      ms INTEGER NOT NULL DEFAULT 0,
+      error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_cu_journal_conv ON cu_journal(conversation_id, id);
+    "#,
 ];
 
 impl Database {
@@ -637,6 +660,100 @@ impl Database {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    // ---------- action journal (computer use) ----------
+
+    /// One auditable line per executed computer-use step: what she did, at
+    /// what grant level, with what evidence. The journal IS the audit log
+    /// and the memory of her deeds.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_cu_step(
+        &self,
+        conversation_id: Option<i64>,
+        seq_index: usize,
+        op: &str,
+        grant_level: &str,
+        target: &str,
+        ok: bool,
+        dry_run: bool,
+        active: Option<&str>,
+        before_ref: Option<&str>,
+        after_ref: Option<&str>,
+        check_note: Option<&str>,
+        ms: u64,
+        error: Option<&str>,
+    ) -> Result<i64> {
+        self.conn().execute(
+            "INSERT INTO cu_journal(conversation_id, seq_index, op, grant_level, target, ok,
+             dry_run, active, before_ref, after_ref, check_note, ms, error)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            params![
+                conversation_id,
+                seq_index as i64,
+                op,
+                grant_level,
+                target,
+                ok as i64,
+                dry_run as i64,
+                active,
+                before_ref,
+                after_ref,
+                check_note,
+                ms as i64,
+                error
+            ],
+        )?;
+        Ok(self.conn().last_insert_rowid())
+    }
+
+    pub fn list_cu_journal(
+        &self,
+        conversation_id: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<CuJournalEntry>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, conversation_id, seq_index, op, grant_level, target, ok, dry_run,
+                    active, before_ref, after_ref, check_note, ms, error
+             FROM cu_journal
+             WHERE (?1 IS NULL OR conversation_id = ?1)
+             ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![conversation_id, limit.clamp(1, 1000)], |r| {
+                let ok: i64 = r.get(7)?;
+                let dry: i64 = r.get(8)?;
+                Ok(CuJournalEntry {
+                    id: r.get(0)?,
+                    ts: r.get(1)?,
+                    conversation_id: r.get(2)?,
+                    seq_index: r.get(3)?,
+                    op: r.get(4)?,
+                    grant_level: r.get(5)?,
+                    target: r.get(6)?,
+                    ok: ok != 0,
+                    dry_run: dry != 0,
+                    active: r.get(9)?,
+                    before_ref: r.get(10)?,
+                    after_ref: r.get(11)?,
+                    check_note: r.get(12)?,
+                    ms: r.get(13)?,
+                    error: r.get(14)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Retention: drop journal rows older than N days (screenshots pile up —
+    /// the owner's MCP troubleshooting says so too).
+    pub fn prune_cu_journal(&self, keep_days: i64) -> Result<usize> {
+        let n = self.conn().execute(
+            "DELETE FROM cu_journal WHERE ts < datetime('now', ?1 || ' days')",
+            params![format!("-{}", keep_days.max(1))],
+        )?;
+        Ok(n)
     }
 
     // ---------- reports ----------

@@ -1,6 +1,82 @@
 # Changelog
 
-## v0.4.0 — The entity sees the screen (2026-10-01)
+## v0.5.0 — The entity has hands: computer use as a native capability (2026-10-01)
+
+### vara-core::computer_use — the ActLoop and the operation language
+- New module: a serde port of the owner's Windows computer-use MCP design
+  philosophy (see docs/COMPUTER_USE.md for the full mapping). The value
+  carried over is the **discipline**, not the tools:
+  - `CuOp`: 16-op tagged enum (`screenshot`, `verify`, `focus`, `click`,
+    `click_win`, `move`, `type`, `hotkey`, `key`, `keys`, `scroll`, `wait`,
+    `ignore_errors`, `close_window`, `close_app`) — unknown ops and malformed
+    steps are rejected at parse time: **validate-then-execute**, a typo can
+    never half-execute a UI flow (the MCP's run_actions discriminated union).
+  - `CuSequence::parse` + `max_grant` + per-op summary for approval cards.
+  - **Grant ladder L0–L3** (`GrantLevel`): observe / reversible input /
+    destructive lifecycle / system. Destructive hotkey combos
+    (alt+f4, ctrl+w, ctrl+q, ctrl+f4, ctrl+shift+w) auto-escalate to L2.
+  - **ActLoop**: structural enforcement of the see→act→confirm contract —
+    ungrounded coordinates are refused (never blind-click), destructive ops
+    stay dry runs without an L2 policy, sequences ending unverified get one
+    final evidence capture, and correction is bounded to one retry that only
+    fires before any mutation happened.
+  - `LoopReport` discipline metrics: `verify_discipline()`, `grounded_clean()`,
+    retries, blind refusals — the harness grades these, not just outcomes.
+
+### Three adapters behind one contract
+- `MockComputerUse`: a deterministic virtual Windows desktop that reproduces
+  the real failure modes — stale frames from animating panels (settle
+  discipline), focus theft (the `active` diagnosis field), blind-click
+  refusal, focus-first typing. It is the harness world.
+- `SidecarComputerUse`: MCP stdio client for the owner's Python server frozen
+  via PyInstaller (see sidecar/README.md). Full tool mapping + response-
+  as-guidance passthrough (ok/error/active/path/check/dry_run survive).
+- Phase-2 native Rust port targets documented (enigo / windows-rs / DXGI /
+  Windows.Media.Ocr) behind the same `ComputerUseAdapter`.
+
+### Action Journal (audit log + memory of deeds)
+- New `cu_journal` table (migration v4): every executed step with grant
+  level, target, before/after refs, `check` note, and errors — the entity's
+  deeds are auditable and become her own memory. Retention pruning included.
+
+### Chat protocol v2: [[sys]] "computer_use"
+- Vara can now propose whole **verified UI sequences from inside the
+  conversation** — chat and task execution stay one interface (no separate
+  task launcher). The identity prompt teaches the sequence language and its
+  six discipline rules; extraction is tolerant (mangled markers, code
+  fences) and parses into `CuOp`s before anything is proposed to the owner.
+- Policy: ships **OFF** (`allow_computer_use: false`); L2 (close ops) needs
+  the separate `computer_use_allow_close` unlock. Every proposal shows the
+  in-chat approval card; every execution is policy-gated in the shell —
+  the model never runs anything by itself.
+
+### The harness (both faces)
+- **Entity harness**: 9 scenario tests (`computer_use_harness.rs`) asserting
+  grounded flows, stale-frame recovery, destructive gates, blind-click
+  refusal, focus-mismatch diagnosis, bounded correction, schema rejection,
+  journal completeness, and grant classification — the ported contract of
+  the owner's MCP test suite.
+- **Research harness restored**: `scripts/vara_harness_v2.mjs` (referenced by
+  the pre-registered EXPERIMENT_DESIGN.md but previously uncommitted) — the
+  24-run four-arm campaign runner (A/C/B/D × m1/m2 × 3) with hard 90k token
+  budgets, named-model ledger rows, real search/fetch tools, and stop-cause
+  accounting; `--plan` mode smokes the full plan without API calls. Plus
+  `scripts/check_provenance.mjs`: the M1 backed-ratio gate as a standalone
+  step (cited ⊆ fetched + [n] resolution, PASS ≥ 0.95).
+
+### Skill: vara-gui-driver-windows
+- Sixth project skill — the entity's GUI instincts: capability map, the
+  commands→GUI fallback rule (first-class path, two failures then pivot),
+  transient-UI handling, verify-state rules, speed and safety rules.
+
+### Settings & UI
+- Two new bilingual Settings toggles (computer use; destructive unlock)
+  shown only when computer use is on; `computer_use` receipts render in the
+  thread with their own icon and label.
+
+---
+
+## v0.4.0 — The entity sees the screen (2026-10-01) — The entity sees the screen (2026-10-01)
 
 ### First step into computer use: `screenshot`
 - New `[[sys]]` action: `{"action":"screenshot","target":"screen"}`. Vara can
