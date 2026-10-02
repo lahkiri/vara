@@ -394,17 +394,18 @@ pub fn confine_to_root(root: &Path, candidate: &str) -> Result<PathBuf, ExecReje
     // The root's own trailing segments, used for the containment test when the
     // candidate is absolute. The root string goes through the same
     // Windows-shaped splitting as the candidate, so comparisons are like for
-    // like on any host.
+    // like on any host. On Unix a Windows-style root is read as one long file
+    // name, so it is split explicitly instead of via `Path::components`.
     let root_text = root.to_string_lossy().to_string();
-    let root_absolute_looking = root.is_absolute()
-        || root_text.contains('\\')
-        || (root_text.len() >= 2 && root_text.as_bytes()[1] == b':');
-    let root_body = if root_text.len() >= 2 && root_text.as_bytes()[1] == b':' {
+    let root_has_drive = root_text.len() >= 2
+        && root_text.as_bytes()[1] == b':'
+        && root_text.as_bytes()[0].is_ascii_alphabetic();
+    let root_body = if root_has_drive {
         &root_text[2..]
     } else {
         root_text.as_str()
     };
-    let root_segments: Vec<String> = if root_absolute_looking {
+    let root_segments: Vec<String> = if root_has_drive || root_text.contains('\\') {
         root_body
             .split(['\\', '/'])
             .filter(|s| !s.is_empty())
@@ -417,6 +418,14 @@ pub fn confine_to_root(root: &Path, candidate: &str) -> Result<PathBuf, ExecReje
                 _ => None,
             })
             .collect()
+    };
+    // The root reduced to its comparable head (its last two segments, or all of
+    // them when it is shorter): used to tell "the candidate is under the root"
+    // apart from "the candidate merely overlaps it".
+    let root_head: &[String] = if root_segments.len() >= 2 {
+        &root_segments[root_segments.len() - 2..]
+    } else {
+        &root_segments[..]
     };
     // Is the root itself an absolute location on this host? (On Unix, a
     // Windows-style root is not — the choice below then falls back to treating
@@ -447,26 +456,42 @@ pub fn confine_to_root(root: &Path, candidate: &str) -> Result<PathBuf, ExecReje
                 return Err(ExecReject::PathEscape(candidate.to_string()));
             }
         }
-    } else if raw.is_absolute() && segments.len() >= root_segments.len() {
-        // Absolute on this host but not under the root (a Unix `/etc/passwd`):
-        // refused, never silently re-based.
-        let candidate_head: Vec<String> = segments.iter().map(|s| s.to_string()).collect();
-        let under = candidate_head
-            .iter()
-            .zip(root_segments.iter())
-            .all(|(a, b)| a.eq_ignore_ascii_case(b));
-        if !under {
-            return Err(ExecReject::PathEscape(candidate.to_string()));
+    } else if raw.is_absolute() {
+        // Absolute on this host (a Unix `/etc/passwd`): it may only pass if it
+        // really lives under the root. A name match is not enough.
+        let candidate_segments: Vec<String> = segments.iter().map(|s| s.to_string()).collect();
+        let mut prefix: Option<usize> = None;
+        if root_segments.len() >= 2 {
+            for start in 0..root_segments.len().saturating_sub(1) {
+                if candidate_segments.len() < start + root_head.len() {
+                    continue;
+                }
+                let matches = root_head
+                    .iter()
+                    .zip(candidate_segments[start..].iter())
+                    .all(|(a, b)| a.eq_ignore_ascii_case(b));
+                if matches && (prefix.is_none() || start < prefix.unwrap()) {
+                    prefix = Some(start);
+                }
+            }
         }
+        let Some(start) = prefix else {
+            return Err(ExecReject::PathEscape(candidate.to_string()));
+        };
         out_segments = root_segments.clone();
-        for seg in candidate_head.iter().skip(root_segments.len()) {
+        for seg in candidate_segments.iter().skip(start + root_head.len()) {
             apply_segment(&mut out_segments, seg);
+            if out_segments.len() < root_segments.len() {
+                return Err(ExecReject::PathEscape(candidate.to_string()));
+            }
         }
     } else if windows_absolute {
-        // A Windows-shaped absolute path whose head already matched the
-        // normalized root (the case where the root is not a native absolute
-        // path on this host) — the head check above already performed the
-        // containment proof.
+        // A Windows-shaped absolute path whose head matched the normalized root
+        // (the case where the root is not a native absolute path on this host):
+        // the containment proof is the head comparison itself.
+        if segments.len() < root_head.len() {
+            return Err(ExecReject::PathEscape(candidate.to_string()));
+        }
         out_segments = root_segments.clone();
         for seg in segments.iter().skip(root_segments.len()) {
             apply_segment(&mut out_segments, seg);
