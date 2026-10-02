@@ -3,8 +3,13 @@
 
 import { listen } from "@tauri-apps/api/event";
 import { api, isTauri, type EntityEvent, type Bootstrap, type EntityStatus, type Stats, type ChatDeltaPayload } from "./api";
-import type { Settings, Mission, Conversation, ChatMessageRecord, SysAction, UpdateInfo, ChatDonePayload } from "./types";
+import type { Settings, Mission, Conversation, ChatMessageRecord, SysAction, ActionProposal, UpdateInfo, ChatDonePayload } from "./types";
 import { loadLang, applyLangDom } from "./i18n.svelte";
+// Protocol parsing lives in exactly one place: ./protocol.ts (locked to
+// crates/vara-core/src/chat.rs by the shared fixture + Rust parity test).
+import { extractMissionGoal, stripProtocolBlocks, stripMissionBlock } from "./protocol";
+
+export { extractMissionGoal, stripProtocolBlocks, stripMissionBlock };
 
 export const app = $state<{
   ready: boolean;
@@ -43,8 +48,14 @@ export const chat = $state<{
   pendingQuestion: string;
   /// Live mission progress keyed by mission id — feeds the in-thread cards.
   liveMissions: Record<number, { status: string; steps_done: number; max_steps: number; spent_tokens: number }>;
-  /// OS actions waiting for the owner's approval, keyed by message id.
-  pendingSys: Record<number, SysAction[]>;
+  /// Proposals waiting for the owner's decision, keyed by message id. Refused
+  /// entries (policy rejected them before a card could be shown) are kept here
+  /// too, so the thread explains the refusal instead of hiding it.
+  pendingSys: Record<number, ActionProposal[]>;
+  /// The goal the backend extracted for a message, keyed by message id. The
+  /// displayed text has the protocol markers stripped, so the proposal has to
+  /// be remembered rather than re-parsed from what the user sees.
+  missionGoals: Record<number, string>;
 }>({
   conversations: [],
   activeId: null,
@@ -54,6 +65,7 @@ export const chat = $state<{
   pendingQuestion: "",
   liveMissions: {},
   pendingSys: {},
+  missionGoals: {},
 });
 
 export async function loadConversations(): Promise<void> {
@@ -66,6 +78,15 @@ export async function openConversation(id: number): Promise<void> {
   chat.error = "";
   chat.messages = await api.messages(id).catch(() => []);
   chat.loadingThread = false;
+  // Re-render proposals that are still awaiting a decision. They live in the
+  // database, not in this object, so a reload (or a different window) shows the
+  // same pending card instead of losing an open question.
+  chat.pendingSys = {};
+  const open = await api.proposals(id).catch(() => [] as ActionProposal[]);
+  for (const p of open) {
+    if (p.state !== "pending" || !p.message_id) continue;
+    (chat.pendingSys[p.message_id] ??= []).push(p);
+  }
   // seed live mission cards with the persisted status (historical threads)
   const cardIds = new Set(
     chat.messages.filter((m) => m.kind === "mission" && m.mission_id).map((m) => m.mission_id as number),
@@ -113,24 +134,40 @@ export async function startMissionFromChat(goal: string): Promise<void> {
   }
 }
 
-/// Executes one approved OS action; the receipt lands in the thread.
-export async function executeSysAction(messageId: number, action: SysAction): Promise<void> {
-  if (chat.activeId === null) return;
+/// Approves and executes one proposal. Two backend calls on purpose: the
+/// decision and the execution are separate rows in the state machine, so an
+/// approval cannot be replayed and an expired card cannot run anything.
+/// The target is never sent from here — the shell executes what it stored.
+export async function executeSysAction(messageId: number, proposal: ActionProposal): Promise<void> {
+  if (proposal.id === null) return;
+  chat.error = "";
   try {
-    await api.sysExecute(chat.activeId, action.action, action.target);
+    await api.sysApprove(proposal.id, true);
+    await api.sysExecute(proposal.id);
   } catch (e) {
     chat.error = String(e);
   } finally {
-    const list = chat.pendingSys[messageId];
-    if (list) {
-      chat.pendingSys[messageId] = list.filter((a) => a.target !== action.target || a.action !== action.action);
-      if (chat.pendingSys[messageId].length === 0) delete chat.pendingSys[messageId];
-    }
+    removePending(messageId, proposal.id);
   }
 }
 
-export function dismissSysActions(messageId: number): void {
+/// Declines a proposal (or clears the whole card): a denial is recorded, not
+/// just forgotten, so the entity learns the owner said no.
+export async function dismissSysActions(messageId: number): Promise<void> {
+  const list = chat.pendingSys[messageId] ?? [];
+  await Promise.all(
+    list
+      .filter((p) => p.id !== null)
+      .map((p) => api.sysApprove(p.id as number, false).catch(() => undefined)),
+  );
   delete chat.pendingSys[messageId];
+}
+
+function removePending(messageId: number, proposalId: number | null): void {
+  const list = chat.pendingSys[messageId];
+  if (!list) return;
+  chat.pendingSys[messageId] = list.filter((p) => p.id !== proposalId);
+  if (chat.pendingSys[messageId].length === 0) delete chat.pendingSys[messageId];
 }
 
 export async function sendMessage(text: string): Promise<void> {
@@ -196,10 +233,25 @@ function applyDone(p: ChatDonePayload): void {
     m.model = p.model;
     m.tokens = p.tokens;
   }
-  // OS actions awaiting approval attach to the assistant message
-  if (p.sys_actions && p.sys_actions.length > 0) {
-    chat.pendingSys[p.message_id] = p.sys_actions;
-  }
+  // OS actions awaiting approval attach to the assistant message. The backend
+  // minted them; the UI only ever holds ids + the text to display. Older
+  // payloads (and the browser mock) carry `sys_actions` only: those become
+  // display-only cards rather than executable ones, because nothing was
+  // approved in the backend for them.
+  const proposals: ActionProposal[] =
+    p.proposals ??
+    (p.sys_actions ?? []).map((a) => ({
+      id: null,
+      action: a.action,
+      target: a.target,
+      risk: "high" as const,
+      expires_at: 0,
+      refused: null,
+    }));
+  if (proposals.length > 0) chat.pendingSys[p.message_id] = proposals;
+  // remember the proposal goal: `p.content` is the stripped text, so re-parsing
+  // it later finds nothing and the "turn into a mission" button would vanish.
+  if (p.mission_goal) chat.missionGoals[p.message_id] = p.mission_goal;
   if (p.error) chat.error = p.error;
   if (!isTauri()) scrollChatToBottom(true);
 }
@@ -229,55 +281,13 @@ export function lastMissionProposal(): { messageId: number; goal: string } | nul
   for (let i = chat.messages.length - 1; i >= 0; i--) {
     const m = chat.messages[i];
     if (m.role !== "assistant") continue;
-    const goal = extractMissionGoal(m.content);
+    // the backend's extraction first (the display text has markers stripped),
+    // then the raw text for threads loaded from an older build
+    const goal = chat.missionGoals[m.id] ?? extractMissionGoal(m.content);
     if (goal) return { messageId: m.id, goal };
     if (m.status !== "streaming") break;
   }
   return null;
-}
-
-/// Tolerant marker matching — models mangle the exact protocol, and the UI
-/// must never leak any variant of it (this exact bug shipped in v0.2.0).
-const MISSION_OPEN_RE =
-  /(?:\[\[\s*mission\s*\]\]|\[\s*mission\s*\]|\{\{\s*mission\s*\}\}|\{\s*mission\s*\})/i;
-const MISSION_CLOSE_RE =
-  /(?:\[\[\s*\/\s*mission\s*\]\]|\[\s*\/\s*mission\s*\]|\{\{\s*\/\s*mission\s*\}\}|\{\s*\/\s*mission\s*\}|\{\s*mission_close\s*\})/i;
-const SYS_OPEN_RE = /(?:\[\[\s*sys\s*\]\]|\[\s*sys\s*\]|\{\s*sys_open\s*\})/i;
-const SYS_CLOSE_RE = /(?:\[\[\s*\/\s*sys\s*\]\]|\[\s*\/\s*sys\s*\]|\{\s*sys_close\s*\})/i;
-
-export function extractMissionGoal(content: string): string | null {
-  const open = MISSION_OPEN_RE.exec(content);
-  if (!open) return null;
-  const rest = content.slice(open.index + open[0].length);
-  const close = MISSION_CLOSE_RE.exec(rest);
-  const goal = (close ? rest.slice(0, close.index) : (rest.split("\n")[0] ?? "")).trim();
-  return goal || null;
-}
-
-/// Strips mission + sys protocol blocks from display text (tolerant).
-export function stripProtocolBlocks(content: string): string {
-  let out = content;
-  const pairs: [RegExp, RegExp][] = [
-    [MISSION_OPEN_RE, MISSION_CLOSE_RE],
-    [SYS_OPEN_RE, SYS_CLOSE_RE],
-  ];
-  for (const [openRe, closeRe] of pairs) {
-    for (let i = 0; i < 3; i++) {
-      const open = openRe.exec(out);
-      if (!open) break;
-      const afterOpen = out.slice(open.index + open[0].length);
-      const close = closeRe.exec(afterOpen);
-      const endIdx = close
-        ? open.index + open[0].length + close.index + close[0].length
-        : open.index + open[0].length + (afterOpen.split("\n")[0]?.length ?? 0);
-      out = (out.slice(0, open.index) + out.slice(endIdx)).trim();
-    }
-  }
-  return out.replace(/\n{3,}/g, "\n\n").trim();
-}
-
-export function stripMissionBlock(content: string): string {
-  return stripProtocolBlocks(content);
 }
 
 export function scrollChatToBottom(smooth = false): void {

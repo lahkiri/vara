@@ -12,6 +12,8 @@ import type {
   Conversation,
   ChatMessageRecord,
   SendChatStart,
+  ActionProposal,
+  SkillDoc,
   SysExecuteResult,
 } from "./types";
 
@@ -424,10 +426,19 @@ export const mockApi: Api = {
     })();
     return id;
   },
-  sysExecute: async (conversationId: number, action: string, target: string): Promise<SysExecuteResult> => {
+  sysApprove: async (_proposalId: number, _approve: boolean): Promise<void> => {},
+  proposals: async (_conversationId: number, _limit = 50): Promise<ActionProposal[]> => [],
+  skills: async (): Promise<SkillDoc[]> => [],
+  sysExecute: async (proposalId: number): Promise<SysExecuteResult> => {
+    const conversationId = 1;
     const rec = pushMsg(conversationId, {
       role: "assistant",
-      content: JSON.stringify({ action, target, ok: true, output: "(demo) executed", error: "" }),
+      content: JSON.stringify({
+        proposal_id: proposalId,
+        ok: true,
+        output: "(demo) executed",
+        error: "",
+      }),
       model: null,
       tokens: 0,
       status: "ok",
@@ -436,7 +447,7 @@ export const mockApi: Api = {
       mission_id: null,
     });
     window.dispatchEvent(new CustomEvent("mock:chat/message", { detail: rec }));
-    return { ok: true, action, target, output: "(demo) executed", error: "" };
+    return { ok: true, action: "run", target: "(demo)", output: "(demo) executed", error: "" };
   },
 
   checkForUpdate: async () => null,

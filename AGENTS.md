@@ -16,16 +16,27 @@ before claims** and **the conversation is the entity**.
 3. **Secrets never enter prompts, logs, or the repo.** API keys live in the
    local settings file or the `VARA_PROVIDER_*` environment variables
    (`VARA_PROVIDER_API_KEY` / `VARA_PROVIDER_BASE_URL` / `VARA_PROVIDER_MODEL`;
-   env > file, re-applied after every UI save). Never hardcode keys in code,
+   env > file for the running app, re-applied after every UI save). An
+   environment-provided key must **never** be written to disk: persist
+   `Settings::without_api_key()`, and hand the webview `Settings::for_webview()`
+   (it learns `has_api_key` / `api_key_source`, never the key itself). Spawned
+   commands get a scrubbed environment (`exec_policy::child_env`), so a command
+   the entity runs cannot read the owner's key. Never hardcode keys in code,
    tests, or CI logs.
 4. **The policy engine gates every OS action.** The model can only *propose*
    actions via the `[[sys]]` protocol (`open_url` / `open_path` / `run` /
    `screenshot` / `computer_use`); execution happens in the shell
    (`sys_execute` / `run_computer_use`) after the autonomy settings allow it.
-   `run`, `screenshot` and `computer_use` always show an explicit approval
+   Proposals are **minted by the core from model output**
+   (`exec_policy::plan_proposal`) into `action_proposals` rows; the webview
+   receives ids, never payloads, and `sys_execute(proposal_id)` claims an
+   approved, unexpired, single-use row and executes the target stored in that
+   row. `run`, `screenshot` and `computer_use` always show an explicit approval
    card; screen capture and computer use ship OFF (`allow_screenshots: false`,
-   `allow_computer_use: false`), and destructive L2 ops additionally require
-   `computer_use_allow_close`. The ActLoop structurally refuses ungrounded
+   `allow_computer_use: false`), commands ship OFF (`run_commands: false`), and
+   destructive L2 ops additionally require `computer_use_allow_close`. `run` is
+   **argv-only** — no shell, no composition, secrets scrubbed — through
+   `exec_policy::CommandPolicy`. The ActLoop structurally refuses ungrounded
    coordinates and dry-runs destructive ops — never weaken those guards to
    "make a task finish". Never add a code path where model output executes
    directly.
@@ -35,9 +46,13 @@ before claims** and **the conversation is the entity**.
    reintroduce separate launcher surfaces.
 6. **Protocol parsing is tolerant.** Models mangle markers
    (`[mission]…{MISSION_CLOSE}` variants). Extraction must accept known
-   variants and the UI must never leak raw protocol text. Both core (Rust,
-   `chat.rs`) and webview (`state.svelte.ts`) implement this — keep them in
-   sync and keep the unit tests green.
+   variants and the UI must never leak raw protocol text. Both implementations —
+   core (Rust, `crates/vara-core/src/chat.rs`) and webview
+   (`src/lib/protocol.ts`, re-exported by `state.svelte.ts`) — must stay in sync:
+   they are locked together by the shared fixture
+   `tests/fixtures/protocol_cases.json`, read by both
+   `crates/vara-core/tests/protocol_parity.rs` and `tests/protocol.test.ts`.
+   Change a parser, change the fixture, run both suites.
 7. **Token budgets are binding.** Mission budget/steps clamps live in types +
    commands; do not loosen them to "make it finish".
 

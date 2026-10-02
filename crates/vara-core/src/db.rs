@@ -126,7 +126,74 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX IF NOT EXISTS idx_cu_journal_conv ON cu_journal(conversation_id, id);
     "#,
+    /* v5 — Action proposals: the owner's approval is a row, not a UI state.
+    The model's [[sys]] proposals are minted HERE (in the core, from model
+    output), carry a digest of exactly what was proposed, and can only be
+    executed after an approval that is atomic, single-use and time-boxed.
+    A webview can name a proposal id; it can never invent one. */
+    r#"
+    CREATE TABLE IF NOT EXISTS action_proposals(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      conversation_id INTEGER,
+      message_id INTEGER,
+      kind TEXT NOT NULL,
+      target TEXT NOT NULL DEFAULT '',
+      reason TEXT NOT NULL DEFAULT '',
+      risk TEXT NOT NULL DEFAULT 'medium',
+      state TEXT NOT NULL DEFAULT 'pending',
+      digest TEXT NOT NULL DEFAULT '',
+      expires_at INTEGER NOT NULL DEFAULT 0,
+      decided_at INTEGER,
+      executed_at INTEGER,
+      result TEXT,
+      error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_action_proposals_conv
+      ON action_proposals(conversation_id, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_action_proposals_state
+      ON action_proposals(state, expires_at);
+    "#,
+    /* v6 — the provenance receipt travels with the report: gate version,
+    ratios with Wilson intervals, claim counts, C1/C2/C3, and the honest reason
+    when something could not be evaluated. Without it a stored report could be
+    shown as PASS with no denominator and no interval behind it. */
+    r#"
+    ALTER TABLE reports ADD COLUMN receipt_json TEXT;
+    "#,
 ];
+
+/// Split a migration script into statements on `;`, ignoring semicolons inside
+/// single-quoted string literals. Migrations here are DDL only, but a stray
+/// literal must never silently truncate a schema change.
+fn split_sql_statements(sql: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    for c in sql.chars() {
+        match c {
+            '\'' => {
+                in_single = !in_single;
+                current.push(c);
+            }
+            ';' if !in_single => {
+                out.push(std::mem::take(&mut current));
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.trim().is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// Errors that mean "a previous run already created this object", which is
+/// progress rather than failure when a migration is replayed.
+fn is_already_applied(e: &rusqlite::Error) -> bool {
+    let msg = e.to_string().to_ascii_lowercase();
+    msg.contains("duplicate column name") || msg.contains("already exists")
+}
 
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
@@ -142,7 +209,7 @@ impl Database {
         Self::init(conn)
     }
 
-    fn init(conn: Connection) -> Result<Self> {
+    fn init(mut conn: Connection) -> Result<Self> {
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
@@ -152,27 +219,81 @@ impl Database {
                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
              );",
         )?;
-        let current: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-            [],
-            |r| r.get(0),
-        )?;
+        // Which versions are actually recorded, rather than just the highest
+        // one: `MAX(version)` silently skips a gap, so a version row lost to a
+        // crash (or a hand-edited database) could never be re-applied.
+        let applied: std::collections::HashSet<i64> = {
+            let mut stmt = conn.prepare("SELECT version FROM schema_migrations")?;
+            let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+            rows.collect::<std::result::Result<std::collections::HashSet<_>, _>>()?
+        };
         for (i, sql) in MIGRATIONS.iter().enumerate() {
             let v = (i + 1) as i64;
-            if v > current {
-                conn.execute_batch(sql)?;
-                conn.execute(
-                    "INSERT INTO schema_migrations(version) VALUES (?1)",
-                    params![v],
-                )?;
+            if !applied.contains(&v) {
+                Self::apply_migration(&mut conn, v, sql)?;
             }
         }
         // FTS5 detection: if anything fails, we silently run in LIKE mode.
         let fts = Self::try_setup_fts(&conn).unwrap_or(false);
+        if fts {
+            // Heal a desynchronised external-content index. This matters when
+            // FTS5 becomes available on a machine whose notes were written
+            // while Vara was running in LIKE mode: the virtual table is created
+            // empty and every pre-existing note would be silently unsearchable.
+            Self::rebuild_fts_if_stale(&conn);
+        }
         Ok(Self {
             conn: Mutex::new(conn),
             fts,
         })
+    }
+
+    /// Apply one migration: statement by statement, inside a transaction, and
+    /// tolerant of objects a previous crashed run already created.
+    ///
+    /// The old code ran `execute_batch(sql)` and *then* inserted the version
+    /// row. A crash in between (or any mid-batch failure) meant the next launch
+    /// replayed the batch; for v3 that is two `ALTER TABLE ... ADD COLUMN`
+    /// statements, which fail with "duplicate column name" and made
+    /// `Database::open` return `Err` forever — the app could never open its own
+    /// database again. Splitting the batch and treating already-exists errors
+    /// as progress makes replay safe, and the surrounding transaction keeps the
+    /// schema and the version row in step.
+    fn apply_migration(conn: &mut Connection, version: i64, sql: &str) -> Result<()> {
+        let tx = conn.transaction()?;
+        for statement in split_sql_statements(sql) {
+            let statement = statement.trim();
+            if statement.is_empty() {
+                continue;
+            }
+            if let Err(e) = tx.execute_batch(statement) {
+                if is_already_applied(&e) {
+                    continue;
+                }
+                return Err(e.into());
+            }
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO schema_migrations(version) VALUES (?1)",
+            params![version],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Rebuild the FTS index when its row count no longer matches `notes`.
+    fn rebuild_fts_if_stale(conn: &Connection) {
+        let indexed: Option<i64> = conn
+            .query_row("SELECT COUNT(*) FROM notes_fts", [], |r| r.get(0))
+            .ok();
+        let total: Option<i64> = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .ok();
+        if let (Some(indexed), Some(total)) = (indexed, total) {
+            if indexed != total {
+                let _ = conn.execute_batch("INSERT INTO notes_fts(notes_fts) VALUES('rebuild');");
+            }
+        }
     }
 
     fn try_setup_fts(conn: &Connection) -> Option<bool> {
@@ -201,6 +322,16 @@ impl Database {
 
     pub fn fts_enabled(&self) -> bool {
         self.fts
+    }
+
+    /// Highest migration version applied to this database.
+    pub fn schema_version(&self) -> Result<i64> {
+        let v = self.conn().query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(v)
     }
 
     fn conn(&self) -> MutexGuard<'_, Connection> {
@@ -789,6 +920,7 @@ impl Database {
         let sources_json: Option<String> = r.get(4)?;
         let check_json: Option<String> = r.get(5)?;
         let repaired: i64 = r.get(8)?;
+        let receipt_json: Option<String> = r.get(9)?;
         Ok(ReportRecord {
             id: r.get(0)?,
             mission_id: r.get(1)?,
@@ -799,14 +931,33 @@ impl Database {
             backed_ratio: r.get(6)?,
             verdict: r.get(7)?,
             repaired: repaired != 0,
+            receipt_json: receipt_json.and_then(|s| serde_json::from_str(&s).ok()),
         })
+    }
+
+    /// Attach the provenance receipt (and the per-claim audit) to a stored
+    /// report. Kept separate from `insert_report` so the receipt is written by
+    /// the same code path that computed the verdict, and so a failure to store
+    /// it can never turn a FAIL into a PASS.
+    pub fn set_report_receipt(
+        &self,
+        report_id: i64,
+        receipt: &serde_json::Value,
+        claims: &serde_json::Value,
+    ) -> Result<()> {
+        let payload = serde_json::json!({ "receipt": receipt, "claims": claims });
+        self.conn().execute(
+            "UPDATE reports SET receipt_json = ?1 WHERE id = ?2",
+            params![payload.to_string(), report_id],
+        )?;
+        Ok(())
     }
 
     pub fn get_report(&self, id: i64) -> Result<ReportRecord> {
         let conn = self.conn();
         conn.query_row(
             "SELECT id, mission_id, created_at, markdown, sources_json, check_json,
-                    backed_ratio, verdict, repaired
+                    backed_ratio, verdict, repaired, receipt_json
              FROM reports WHERE id = ?1",
             params![id],
             Self::report_from_row,
@@ -818,7 +969,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, mission_id, created_at, markdown, sources_json, check_json,
-                    backed_ratio, verdict, repaired
+                    backed_ratio, verdict, repaired, receipt_json
              FROM reports ORDER BY id DESC LIMIT ?1",
         )?;
         let rows = stmt
@@ -1036,7 +1187,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, mission_id, created_at, markdown, sources_json, check_json,
-                    backed_ratio, verdict, repaired
+                    backed_ratio, verdict, repaired, receipt_json
              FROM reports WHERE mission_id = ?1 ORDER BY id DESC LIMIT 1",
         )?;
         let mut rows = stmt
@@ -1095,6 +1246,179 @@ pub fn keywords_of(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// A second inherent impl keeps the approval-boundary code together and
+/// reviewable; Rust allows multiple `impl Database` blocks.
+impl Database {
+    // ---------- action proposals (the approval boundary) ----------
+    //
+    // A proposal is minted here from model output, approved by the owner, and
+    // claimed for execution exactly once. The transitions use
+    // `UPDATE ... WHERE state = ?` so two concurrent executes cannot both win,
+    // and the shell executes the target stored in this row — never a target
+    // supplied by the caller — so the webview cannot widen what was approved.
+
+    pub fn insert_action_proposal(
+        &self,
+        planned: &crate::exec_policy::PlannedProposal,
+        conversation_id: Option<i64>,
+        message_id: Option<i64>,
+    ) -> Result<i64> {
+        self.conn().execute(
+            "INSERT INTO action_proposals(
+               conversation_id, message_id, kind, target, reason, risk, state,
+               digest, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8)",
+            params![
+                conversation_id,
+                message_id,
+                planned.kind.as_str(),
+                planned.target,
+                planned.reason,
+                planned.risk.as_str(),
+                planned.digest,
+                planned.expires_at
+            ],
+        )?;
+        Ok(self.conn().last_insert_rowid())
+    }
+
+    fn row_to_proposal(
+        r: &rusqlite::Row<'_>,
+    ) -> rusqlite::Result<crate::exec_policy::ActionProposal> {
+        use crate::exec_policy::{ProposalKind, ProposalState, Risk};
+        let kind_raw: String = r.get("kind")?;
+        let risk_raw: String = r.get("risk")?;
+        let state_raw: String = r.get("state")?;
+        Ok(crate::exec_policy::ActionProposal {
+            id: r.get("id")?,
+            conversation_id: r.get("conversation_id")?,
+            message_id: r.get("message_id")?,
+            kind: ProposalKind::parse(&kind_raw).unwrap_or(ProposalKind::Run),
+            target: r.get("target")?,
+            reason: r.get("reason")?,
+            risk: match risk_raw.as_str() {
+                "low" => Risk::Low,
+                "high" => Risk::High,
+                _ => Risk::Medium,
+            },
+            state: ProposalState::parse(&state_raw).unwrap_or(ProposalState::Pending),
+            digest: r.get("digest")?,
+            created_at: r.get("created_at")?,
+            expires_at: r.get("expires_at")?,
+            result: r.get("result")?,
+            error: r.get("error")?,
+        })
+    }
+
+    pub fn get_action_proposal(
+        &self,
+        id: i64,
+    ) -> Result<Option<crate::exec_policy::ActionProposal>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT * FROM action_proposals WHERE id = ?1")?;
+        let mut rows = stmt.query_map(params![id], Self::row_to_proposal)?;
+        Ok(rows.next().transpose()?)
+    }
+
+    /// Proposals for one conversation, newest first — what the thread renders.
+    pub fn list_action_proposals(
+        &self,
+        conversation_id: i64,
+        limit: i64,
+    ) -> Result<Vec<crate::exec_policy::ActionProposal>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT * FROM action_proposals WHERE conversation_id = ?1
+             ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(
+                params![conversation_id, limit.clamp(1, 200)],
+                Self::row_to_proposal,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// The owner's decision. Returns true only for the call that performed the
+    /// transition, so a double-click cannot approve twice and an expired
+    /// proposal cannot be approved at all.
+    pub fn decide_action_proposal(&self, id: i64, approve: bool, now: i64) -> Result<bool> {
+        let next = if approve { "approved" } else { "denied" };
+        let changed = self.conn().execute(
+            "UPDATE action_proposals SET state = ?1, decided_at = ?2
+             WHERE id = ?3 AND state = 'pending' AND expires_at > ?4",
+            params![next, now, id, now],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Claim an approved proposal for execution. Atomic: exactly one caller can
+    /// win, and a second attempt is impossible because the row leaves
+    /// `approved`.
+    pub fn claim_action_proposal(
+        &self,
+        id: i64,
+        now: i64,
+    ) -> Result<Option<crate::exec_policy::ActionProposal>> {
+        let changed = self.conn().execute(
+            "UPDATE action_proposals SET state = 'executing'
+             WHERE id = ?1 AND state = 'approved' AND expires_at > ?2",
+            params![id, now],
+        )?;
+        if changed != 1 {
+            return Ok(None);
+        }
+        self.get_action_proposal(id)
+    }
+
+    pub fn finish_action_proposal(
+        &self,
+        id: i64,
+        ok: bool,
+        result: &str,
+        error: &str,
+        now: i64,
+    ) -> Result<()> {
+        self.conn().execute(
+            "UPDATE action_proposals
+             SET state = ?1, executed_at = ?2, result = ?3, error = ?4
+             WHERE id = ?5",
+            params![
+                if ok { "executed" } else { "failed" },
+                now,
+                result,
+                error,
+                id
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Mark stale pending/approved proposals as expired. Keeps the approval
+    /// window honest across restarts: an approval from ten minutes ago is not
+    /// an approval for now.
+    pub fn expire_action_proposals(&self, now: i64) -> Result<usize> {
+        let n = self.conn().execute(
+            "UPDATE action_proposals SET state = 'expired'
+             WHERE state IN ('pending', 'approved') AND expires_at <= ?1",
+            params![now],
+        )?;
+        Ok(n)
+    }
+
+    /// How many proposals are waiting for the owner — the UI badge, and tests.
+    pub fn pending_proposal_count(&self, conversation_id: i64, now: i64) -> Result<i64> {
+        let n = self.conn().query_row(
+            "SELECT COUNT(*) FROM action_proposals
+             WHERE conversation_id = ?1 AND state = 'pending' AND expires_at > ?2",
+            params![conversation_id, now],
+            |r| r.get(0),
+        )?;
+        Ok(n)
+    }
 }
 
 #[cfg(test)]
@@ -1221,5 +1545,137 @@ mod tests {
         let s = db.stats().unwrap();
         assert_eq!(s.reports_total, 2);
         assert_eq!(s.missions_completed, 0);
+    }
+
+    /// The old migration runner ran the batch and *then* recorded the version.
+    /// A crash in between replayed the batch on the next launch; for v3 that
+    /// means `ALTER TABLE ... ADD COLUMN` on columns that already exist, which
+    /// used to make `Database::open` fail forever. This reproduces that state
+    /// (columns present, version row missing) and requires the app to recover.
+    #[test]
+    fn open_heals_a_migration_that_was_applied_but_not_recorded() {
+        let dir = std::env::temp_dir().join(format!("vara-mig-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("vara.db");
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let db = Database::open(&path).unwrap();
+            assert_eq!(db.schema_version().unwrap(), MIGRATIONS.len() as i64);
+        }
+
+        // Simulate "batch ran, version row never written" for v3, and also drop
+        // the index that the same batch was supposed to create.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute("DELETE FROM schema_migrations WHERE version = 3", [])
+                .unwrap();
+            conn.execute_batch("DROP INDEX IF EXISTS idx_messages_mission;")
+                .unwrap();
+            let has_kind: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'kind'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(has_kind, 1, "precondition: v3 columns are already there");
+        }
+
+        let db = Database::open(&path).expect("reopening must not brick the database");
+        assert_eq!(db.schema_version().unwrap(), MIGRATIONS.len() as i64);
+        let index_exists: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_messages_mission'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_exists, 1, "the partial migration must be completed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opening_twice_is_idempotent_and_reports_the_current_version() {
+        let db = Database::open_memory().unwrap();
+        assert_eq!(db.schema_version().unwrap(), MIGRATIONS.len() as i64);
+        assert_eq!(db.pending_proposal_count(1, 1_000).unwrap(), 0);
+    }
+
+    #[test]
+    fn proposal_lifecycle_is_single_use_and_time_boxed() {
+        use crate::exec_policy::{plan_proposal, ProposalKind, ProposalState};
+        let db = Database::open_memory().unwrap();
+        let now = 10_000i64;
+        let planned =
+            plan_proposal(ProposalKind::Run, "cargo test", "verify the build", now).unwrap();
+        let id = db
+            .insert_action_proposal(&planned, Some(7), Some(3))
+            .unwrap();
+
+        let stored = db.get_action_proposal(id).unwrap().unwrap();
+        assert_eq!(stored.state, ProposalState::Pending);
+        assert_eq!(stored.conversation_id, Some(7));
+        assert_eq!(stored.message_id, Some(3));
+        assert_eq!(stored.target, "cargo test");
+        assert!(stored.digest_matches(), "digest must bind kind + target");
+        assert_eq!(db.pending_proposal_count(7, now).unwrap(), 1);
+
+        // It cannot run before the owner approves it.
+        assert!(db.claim_action_proposal(id, now).unwrap().is_none());
+
+        assert!(db.decide_action_proposal(id, true, now).unwrap());
+        // Double-click cannot approve twice.
+        assert!(!db.decide_action_proposal(id, true, now).unwrap());
+
+        let claimed = db.claim_action_proposal(id, now).unwrap().unwrap();
+        assert_eq!(claimed.state, ProposalState::Executing);
+        assert!(claimed.may_execute_now(now).is_ok());
+        // Single use: a second claim finds nothing to claim.
+        assert!(db.claim_action_proposal(id, now).unwrap().is_none());
+
+        db.finish_action_proposal(id, true, "exit 0", "", now + 1)
+            .unwrap();
+        let done = db.get_action_proposal(id).unwrap().unwrap();
+        assert_eq!(done.state, ProposalState::Executed);
+        assert_eq!(done.result.as_deref(), Some("exit 0"));
+        assert_eq!(db.pending_proposal_count(7, now).unwrap(), 0);
+    }
+
+    #[test]
+    fn expired_proposals_cannot_be_approved_or_claimed() {
+        use crate::exec_policy::{plan_proposal, ProposalKind, ProposalState};
+        let db = Database::open_memory().unwrap();
+        let now = 50_000i64;
+        let planned = plan_proposal(ProposalKind::Screenshot, "", "look", now).unwrap();
+        let id = db.insert_action_proposal(&planned, Some(1), None).unwrap();
+
+        // Ten minutes later the approval window is long gone.
+        let later = now + 600;
+        assert!(!db.decide_action_proposal(id, true, later).unwrap());
+        assert!(db.claim_action_proposal(id, later).unwrap().is_none());
+        assert_eq!(db.pending_proposal_count(1, later).unwrap(), 0);
+
+        assert_eq!(db.expire_action_proposals(later).unwrap(), 1);
+        assert_eq!(
+            db.get_action_proposal(id).unwrap().unwrap().state,
+            ProposalState::Expired
+        );
+    }
+
+    #[test]
+    fn denied_proposals_never_execute() {
+        use crate::exec_policy::{plan_proposal, ProposalKind, ProposalState};
+        let db = Database::open_memory().unwrap();
+        let now = 1_000i64;
+        let planned = plan_proposal(ProposalKind::Run, "rm -rf build", "", now).unwrap();
+        let id = db.insert_action_proposal(&planned, Some(2), None).unwrap();
+        assert!(db.decide_action_proposal(id, false, now).unwrap());
+        assert!(db.claim_action_proposal(id, now).unwrap().is_none());
+        assert_eq!(
+            db.get_action_proposal(id).unwrap().unwrap().state,
+            ProposalState::Denied
+        );
     }
 }

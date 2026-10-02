@@ -1,6 +1,6 @@
 [package]
 name = "vara-core"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 license = "MIT"
 description = "Core logic for Vara: memory, provenance checking, tools, and the autonomy loop"
@@ -13,6 +13,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 regex = "1"
+sha2 = "0.10"
 url = "2"
 form_urlencoded = "1"
 percent-encoding = "2"

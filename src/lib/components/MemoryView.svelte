@@ -9,6 +9,8 @@
   let newTitle = $state("");
   let newBody = $state("");
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
+  /// The bundled rules documents (read-only) — see `list_skills` in the shell.
+  let skills = $state<{ name: string; description: string; body: string }[]>([]);
 
   const kindT: Record<string, () => string> = {
     research: () => t("kind_research"),
@@ -43,6 +45,7 @@
   }
 
   load();
+  api.skills().then((s) => (skills = s)).catch(() => (skills = []));
 </script>
 
 <div class="flex flex-col gap-4">
@@ -93,6 +96,25 @@
           <div class="text-[10px] text-[var(--muted)]">{n.created_at}</div>
         </div>
       {/each}
+    </div>
+  {/if}
+
+  <!-- The entity's own rules, shown from the bundled skills documents. Read-only
+       on purpose: this is what the owner can hold Vara to, not a plugin surface. -->
+  {#if skills.length > 0}
+    <div class="mt-2">
+      <div class="text-[11px] font-bold text-[var(--muted)] uppercase tracking-wide mb-2">{t("skills_title")}</div>
+      <div class="grid md:grid-cols-2 gap-3">
+        {#each skills as s (s.name)}
+          <details class="card p-4 fade-up">
+            <summary class="cursor-pointer text-sm font-semibold">{s.name}</summary>
+            {#if s.description}
+              <div class="text-xs text-[var(--muted)] mt-1">{s.description}</div>
+            {/if}
+            <pre class="action-output mt-2">{s.body}</pre>
+          </details>
+        {/each}
+      </div>
     </div>
   {/if}
 </div>

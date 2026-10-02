@@ -13,6 +13,8 @@ import type {
   ChatMessageRecord,
   SendChatStart,
   SysAction,
+  ActionProposal,
+  SkillDoc,
   SysExecuteResult,
   UpdateInfo,
 } from "./types";
@@ -29,6 +31,8 @@ export type {
   ChatMessageRecord,
   SendChatStart,
   SysAction,
+  ActionProposal,
+  SkillDoc,
   SysExecuteResult,
   UpdateInfo,
 };
@@ -121,8 +125,18 @@ const realApi = {
   stopChat: (conversationId: number) => invoke<void>("stop_chat", { conversationId }),
   startMissionInConversation: (conversationId: number, goal: string) =>
     invoke<number>("start_mission_in_conversation", { conversationId, goal }),
-  sysExecute: (conversationId: number, action: string, target: string) =>
-    invoke<SysExecuteResult>("sys_execute", { conversationId, action, target }),
+  // Approvals: the owner decides on a backend-minted proposal by id. The UI
+  // has no way to name an action of its own — `sys_execute` looks the target up
+  // in the database, so a compromised renderer cannot widen what was approved.
+  sysApprove: (proposalId: number, approve: boolean) =>
+    invoke<void>("sys_approve", { proposalId, approve }),
+  sysExecute: (proposalId: number) =>
+    invoke<SysExecuteResult>("sys_execute", { proposalId }),
+  proposals: (conversationId: number, limit = 50) =>
+    invoke<ActionProposal[]>("list_action_proposals", { conversationId, limit }),
+
+  // The entity's own rules, shipped with the app (read-only).
+  skills: () => invoke<SkillDoc[]>("list_skills"),
 
   // updates
   checkForUpdate: () => invoke<UpdateInfo | null>("check_for_update"),

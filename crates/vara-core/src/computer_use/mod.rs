@@ -2,13 +2,18 @@
 //!
 //! The loop enforces, structurally, the discipline the owner's MCP taught:
 //! 1. Nothing runs until the whole sequence parses (validate-then-execute).
-//! 2. Coordinates must be grounded — a SEE op must precede any coordinate op;
-//!    the loop refuses ungrounded actions instead of trusting luck.
+//! 2. Coordinates must be grounded — a SEE op must precede any pixel target,
+//!    absolute or window-relative; the loop refuses ungrounded actions instead
+//!    of trusting luck.
 //! 3. Mutating ops accumulate `pending_verify`; a sequence that ends on an
 //!    unverified mutation gets one final screenshot as evidence (the Confirm
-//!    step is structural, not optional advice).
-//! 4. Destructive close ops stay dry runs unless the owner's policy unlocked
-//!    L2 AND the op carries `confirm=true`.
+//!    step is structural, not optional advice) — and when the screenshot grant
+//!    is off the loop captures nothing and *reports* the mutations it could not
+//!    verify, so a run without evidence can never read as verified.
+//! 4. Destructive ops are defused by the loop itself: below L2 a close op is
+//!    converted to a dry run before any adapter sees it, and a destructive
+//!    hotkey is not dispatched at all. The adapter is never asked to really
+//!    close something the policy did not grant.
 //! 5. One bounded correction: after a failure with no prior mutation, the
 //!    loop may re-see and retry once. After any mutation, failures are
 //!    reported — never blindly repeated.
@@ -18,7 +23,9 @@ pub mod ops;
 pub mod sidecar;
 
 pub use mock::{MockComputerUse, MockWidget, MockWindow, WidgetKind};
-pub use ops::{is_destructive_combo, CuOp, CuResult, CuSequence, GrantLevel};
+pub use ops::{
+    is_destructive_combo, normalize_combo, CuOp, CuResult, CuSequence, GrantLevel, PixelTarget,
+};
 pub use sidecar::SidecarComputerUse;
 
 use crate::{Result, VaraError};
@@ -28,6 +35,13 @@ use crate::{Result, VaraError};
 pub struct LoopPolicy {
     /// Highest grant level allowed to execute right now.
     pub max_grant: GrantLevel,
+    /// Owner grant for screen capture (`autonomy.allow_screenshots`).
+    ///
+    /// OFF by default, and enforced here rather than left to the shell: with it
+    /// false the loop refuses every SEE op before an adapter is called and
+    /// skips its own implicit captures (final evidence, correction re-see).
+    /// Capture is a grant, not an adapter feature.
+    pub allow_screenshots: bool,
     /// Append one final screenshot when the sequence ends unverified.
     pub final_evidence: bool,
     /// Bounded correction retries (contract: at most one).
@@ -38,6 +52,9 @@ impl Default for LoopPolicy {
     fn default() -> Self {
         Self {
             max_grant: GrantLevel::L1,
+            // The shipped owner posture: screenshots OFF, no L2. A caller that
+            // wants capture has to say so explicitly — see `allow_screenshots`.
+            allow_screenshots: false,
             final_evidence: true,
             correction_retries: 1,
         }
@@ -66,6 +83,22 @@ pub struct LoopReport {
     pub blind_refusals: usize,
     pub mutations: usize,
     pub verified_mutations: usize,
+    /// Mutations that ended the run with no observation evidence. A mutation
+    /// without evidence must never be counted as verified, so this is the
+    /// honest counter the caller has to look at — `verify_discipline()` drops
+    /// below 1.0 whenever it is non-zero.
+    pub unverified_mutations: usize,
+    /// SEE ops refused by the loop because `allow_screenshots` is false. A
+    /// policy denial, recorded here so it is not mistaken for an adapter error
+    /// (different failure, different fix).
+    pub see_denials: usize,
+    /// True once the run went without evidence because the screenshot grant is
+    /// off: a refused SEE and/or a skipped implicit capture. A report with this
+    /// set is NOT a fully verified run.
+    pub screenshots_disabled: bool,
+    /// Destructive ops the loop itself defused below L2 (converted to a dry run
+    /// or, for destructive hotkeys, never dispatched).
+    pub defused_destructive: usize,
     /// Executed after an approval-less gate rejection? Never — but the report
     /// records the requested level when the policy stopped it.
     pub requested_grant: Option<GrantLevel>,
@@ -87,6 +120,11 @@ impl LoopReport {
     pub fn grounded_clean(&self) -> bool {
         self.blind_refusals == 0
     }
+    /// True only when every mutation this run made was observed afterwards.
+    /// Callers must gate "verified" wording on this, not on `completed`.
+    pub fn fully_verified(&self) -> bool {
+        self.unverified_mutations == 0
+    }
 }
 
 /// The adapter every executor implements: mock in tests, MCP sidecar on
@@ -106,7 +144,10 @@ impl<'a> ActLoop<'a> {
         Self { adapter, policy }
     }
 
-    /// Policy gate BEFORE anything runs: the sequence's max grant must fit.
+    /// Policy gate BEFORE anything runs: the sequence's max grant must fit, and
+    /// a sequence that wants to SEE must hold the screenshot grant. Checked
+    /// here as well as in `run` so a caller can refuse a capture-hungry
+    /// sequence without even spawning an adapter.
     pub fn check_policy(&self, seq: &CuSequence) -> std::result::Result<(), String> {
         let need = seq.max_grant();
         if need > self.policy.max_grant {
@@ -115,6 +156,12 @@ impl<'a> ActLoop<'a> {
                 need.as_str(),
                 self.policy.max_grant.as_str()
             ));
+        }
+        if !self.policy.allow_screenshots && seq.actions.iter().any(|op| op.is_see()) {
+            return Err("sequence captures the screen but screenshots are disabled \
+                 (allow_screenshots=false) — the loop will not look at a screen it is \
+                 not granted"
+                .into());
         }
         Ok(())
     }
@@ -129,7 +176,6 @@ impl<'a> ActLoop<'a> {
         let mut grounded = false;
         let mut pending_verify = 0usize;
         let mut ignore_errors = false;
-        let mut mutated = false;
 
         for (i, op) in seq.actions.iter().enumerate() {
             if matches!(op, CuOp::IgnoreErrors) {
@@ -150,42 +196,143 @@ impl<'a> ActLoop<'a> {
                 continue;
             }
 
-            // Grounding discipline: coordinate ops need a prior SEE.
-            if op.absolute_coords().is_some() && !grounded {
-                report.blind_refusals += 1;
+            // Screenshot grant: capture is a policy grant, not an adapter
+            // feature, so a SEE is refused HERE — before the adapter is asked —
+            // and recorded as a policy denial (its own counter, an error that
+            // names the setting) rather than as an adapter error. Continuing
+            // would let the rest of the sequence act on evidence that was never
+            // taken, so a refused SEE stops the run.
+            if op.is_see() && !self.policy.allow_screenshots {
+                report.see_denials += 1;
+                report.screenshots_disabled = true;
                 report.failed_at = Some(i);
                 report.error = Some(format!(
-                    "action[{i}] ({}) refused: ungrounded coordinates — take a screenshot first",
+                    "action[{i}] ({}) refused: policy denial — screenshots are disabled \
+                     (allow_screenshots=false), so the loop did not ask any adapter to capture",
                     op.tag()
                 ));
                 report.completed = false;
+                report.steps.push(StepRecord {
+                    index: i,
+                    op: op.tag().into(),
+                    grant: op.grant_level(),
+                    ok: false,
+                    dry_run: false,
+                    grounded: true,
+                    result: denied_result(op, "screenshots are disabled (allow_screenshots=false)"),
+                });
+                self.seal(&mut report, pending_verify);
                 return report;
             }
 
-            // Destructive gate: dry runs are fine, confirm=true needs L2.
-            let needs_l2_confirm = matches!(
-                op,
-                CuOp::CloseWindow { confirm: true, .. } | CuOp::CloseApp { confirm: true, .. }
-            ) || matches!(op, CuOp::Hotkey { keys, .. } if ops::is_destructive_combo(keys));
-            if needs_l2_confirm && self.policy.max_grant < GrantLevel::L2 {
+            // Grounding discipline: every pixel target — absolute or
+            // window-relative — needs a prior SEE in this same sequence.
+            if let Some(target) = op.pixel_target() {
+                if !grounded {
+                    let (x, y) = target.coords();
+                    report.blind_refusals += 1;
+                    report.failed_at = Some(i);
+                    report.error = Some(format!(
+                        "action[{i}] ({}) refused: ungrounded coordinates ({x},{y} {}) — \
+                         take a screenshot first",
+                        op.tag(),
+                        target.frame()
+                    ));
+                    report.completed = false;
+                    self.seal(&mut report, pending_verify);
+                    return report;
+                }
+            }
+
+            // Destructive gate: the loop owns the defusal, not the adapter.
+            // Below L2 a model-authored `confirm` is dropped (the adapter gets
+            // an honest dry-run request) and a destructive hotkey — which has
+            // no dry-run form — is never dispatched at all.
+            let below_l2 = op.is_destructive() && self.policy.max_grant < GrantLevel::L2;
+            let mut defused: Option<CuOp> = None;
+            let mut not_sent = false;
+            if below_l2 {
+                match op.as_dry_run() {
+                    Some(dry) if dry != *op => {
+                        defused = Some(dry);
+                        report.defused_destructive += 1;
+                    }
+                    // Already a dry run: the adapter can only ever preview it.
+                    Some(_) => {}
+                    // A chord cannot be previewed, so "dry run" means not sent.
+                    None => not_sent = true,
+                }
+            }
+            if not_sent {
+                report.defused_destructive += 1;
                 report.failed_at = Some(i);
                 report.error = Some(format!(
-                    "action[{i}] ({}) is destructive — policy does not allow L2 right now",
-                    op.tag()
+                    "action[{i}] ({}) is destructive and policy grants {} — the loop did not \
+                     send it to any adapter; ask the owner to unlock L2",
+                    op.tag(),
+                    self.policy.max_grant.as_str()
                 ));
                 report.completed = false;
+                report.steps.push(StepRecord {
+                    index: i,
+                    op: op.tag().into(),
+                    grant: op.grant_level(),
+                    ok: false,
+                    dry_run: true,
+                    grounded: true,
+                    result: dry_run_result(op, self.policy.max_grant),
+                });
+                self.seal(&mut report, pending_verify);
                 return report;
             }
+            let sent: &CuOp = defused.as_ref().unwrap_or(op);
 
             let grant = op.grant_level();
-            let result = self.adapter.execute(op);
+            let result = self.adapter.execute(sent);
+
+            if below_l2 {
+                // The loop, not the adapter, decides what "below L2" means: this
+                // op was only ever sent as a dry run, so it cannot have closed
+                // anything. A success report here means the adapter ignored the
+                // defusal — never a verified deed, and never a mutation.
+                let mut r = result;
+                let claimed_execution = r.ok && !r.dry_run.unwrap_or(false);
+                if claimed_execution {
+                    r.error = Some(format!(
+                        "action[{i}] ({}) was sent as a dry run (policy grants {}, not L2) but \
+                         the adapter reported success — the loop does not count this as executed",
+                        op.tag(),
+                        self.policy.max_grant.as_str()
+                    ));
+                }
+                r.ok = false;
+                r.dry_run = Some(true);
+                report.steps.push(StepRecord {
+                    index: i,
+                    op: op.tag().into(),
+                    grant,
+                    ok: false,
+                    dry_run: true,
+                    grounded: true,
+                    result: r,
+                });
+                report.failed_at = Some(i);
+                report.error = Some(format!(
+                    "action[{i}] ({}) defused to a dry run: policy grants {}, not L2 — nothing \
+                     was closed",
+                    op.tag(),
+                    self.policy.max_grant.as_str()
+                ));
+                report.completed = false;
+                self.seal(&mut report, pending_verify);
+                return report;
+            }
 
             if result.ok && op.is_see() {
                 grounded = true;
             }
             if result.ok && op.is_mutating() {
                 pending_verify += 1;
-                mutated = true;
                 report.mutations += 1;
             }
             // A SEE after a mutation is the Confirm step.
@@ -215,6 +362,7 @@ impl<'a> ActLoop<'a> {
                         op.tag()
                     ));
                     report.failed_at = Some(i);
+                    self.seal(&mut report, pending_verify);
                     return report;
                 }
                 if ignore_errors {
@@ -226,12 +374,15 @@ impl<'a> ActLoop<'a> {
                 report.failed_at = Some(i);
                 report.error = report.steps.last().and_then(|s| s.result.error.clone());
                 report.completed = false;
+                self.seal(&mut report, pending_verify);
                 return report;
             }
         }
 
-        // Confirm is structural: end unverified → one evidence capture.
-        if pending_verify > 0 && self.policy.final_evidence {
+        // Confirm is structural: end unverified → one evidence capture — but
+        // only when the owner granted screenshots. Without the grant the loop
+        // must not quietly capture; it reports the gap instead (see `seal`).
+        if pending_verify > 0 && self.policy.allow_screenshots && self.policy.final_evidence {
             let ev = self.adapter.execute(&CuOp::Screenshot {
                 region: None,
                 settle: 0.1,
@@ -239,11 +390,12 @@ impl<'a> ActLoop<'a> {
             if ev.ok {
                 report.verified_mutations += pending_verify;
                 report.evidence_path = ev.path.clone();
+                pending_verify = 0;
             }
         }
 
         report.completed = true;
-        let _ = mutated;
+        self.seal(&mut report, pending_verify);
         report
     }
 
@@ -262,14 +414,97 @@ impl<'a> ActLoop<'a> {
         if mutated_before_failure {
             return first;
         }
-        // Re-see, then one retry.
-        let _ = self.adapter.execute(&CuOp::Screenshot {
-            region: None,
-            settle: 1.0,
-        });
+        // Re-see, then one retry — and the re-see is a capture like any other:
+        // without the screenshot grant the loop does not look, and it says so
+        // on the retry report instead of leaving a silent hole.
+        if self.policy.allow_screenshots {
+            let _ = self.adapter.execute(&CuOp::Screenshot {
+                region: None,
+                settle: 1.0,
+            });
+        }
         let mut retry = self.run(seq);
         retry.retries_used = 1;
+        if !self.policy.allow_screenshots {
+            retry.screenshots_disabled = true;
+        }
         retry
+    }
+
+    /// Close out a report honestly.
+    ///
+    /// Any mutation still awaiting evidence is counted as `unverified_mutations`
+    /// — never folded into `verified_mutations` — and the reason is stated: the
+    /// screenshots-off gate when that is what stopped the observation, or a
+    /// plain "no evidence" note when the run aborted before the Confirm step.
+    /// This is what keeps a partial or capture-less run from reading as
+    /// verified.
+    fn seal(&self, report: &mut LoopReport, pending_verify: usize) {
+        report.unverified_mutations = pending_verify;
+        if pending_verify == 0 {
+            return;
+        }
+        let note = if self.policy.allow_screenshots {
+            format!("{pending_verify} mutation(s) ran without evidence — this run is NOT verified")
+        } else {
+            report.screenshots_disabled = true;
+            format!(
+                "{pending_verify} mutation(s) ran without evidence: screenshots are disabled by \
+                 policy (allow_screenshots=false) — this run is NOT verified"
+            )
+        };
+        report.error = Some(match report.error.take() {
+            Some(prev) => format!("{prev} — {note}"),
+            None => note,
+        });
+    }
+}
+
+/// Receipt for a SEE op the loop refused to send (no screenshot grant). It is
+/// a policy denial, so it is shaped like one: the loop explains the setting,
+/// and nothing in it can be mistaken for an adapter having tried and failed.
+fn denied_result(op: &CuOp, reason: &str) -> CuResult {
+    CuResult {
+        ok: false,
+        op: op.tag().into(),
+        error: Some(format!("policy denial — {reason}")),
+        active: None,
+        path: None,
+        before_path: None,
+        check: Some(
+            "ask the owner to enable screenshots (allow_screenshots) before planning captures"
+                .into(),
+        ),
+        dry_run: None,
+        focus: None,
+        ms: 0,
+        next: Some("re-plan without observation, or request the screenshot grant".into()),
+        hint: None,
+    }
+}
+
+/// Receipt for a destructive op the loop refused to send at all (a chord has
+/// no dry-run form). It is a dry run in the honest sense: the loop reports what
+/// it declined to do, and which grant would allow it.
+fn dry_run_result(op: &CuOp, granted: GrantLevel) -> CuResult {
+    CuResult {
+        ok: false,
+        op: op.tag().into(),
+        error: Some(format!(
+            "dry run — destructive op not sent (policy grants {}, not L2)",
+            granted.as_str()
+        )),
+        active: None,
+        path: None,
+        before_path: None,
+        check: Some(
+            "ask the owner to unlock L2 (computer_use_allow_close) before firing this".into(),
+        ),
+        dry_run: Some(true),
+        focus: None,
+        ms: 0,
+        next: Some("re-plan without the destructive step, or request the L2 grant".into()),
+        hint: None,
     }
 }
 

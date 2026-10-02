@@ -1,0 +1,320 @@
+{
+  "$comment": "Shared protocol fixture. Single source of truth for BOTH parsers: crates/vara-core/src/chat.rs (Rust) and src/lib/protocol.ts (webview). Rust lock: crates/vara-core/tests/protocol_parity.rs; TypeScript lock: tests/protocol.test.ts. Every expectation here is the real output of vara_core::chat (see protocol_parity.rs); the webview must reproduce it byte for byte.",
+  "cases": [
+    {
+      "actions": [],
+      "clean": "مرحباً! كيف أساعدك اليوم؟",
+      "clean_after_mission": "مرحباً! كيف أساعدك اليوم؟",
+      "goal": null,
+      "input": "مرحباً! كيف أساعدك اليوم؟",
+      "name": "plain_no_markers",
+      "note": "No protocol at all: the text passes through (trimmed, blank lines collapsed)."
+    },
+    {
+      "actions": [],
+      "clean": "سطر أول.\n\nسطر ثاني.",
+      "clean_after_mission": "سطر أول.\n\n\n\nسطر ثاني.",
+      "goal": null,
+      "input": "سطر أول.\n\n\n\nسطر ثاني.\n\n",
+      "name": "plain_blank_lines_collapsed",
+      "note": "Delivery tidy-up: runs of blank lines collapse to one and the ends are trimmed."
+    },
+    {
+      "actions": [],
+      "clean": "أفضل الخوادم المحلية تختلف حسب الذاكرة.",
+      "clean_after_mission": "أفضل الخوادم المحلية تختلف حسب الذاكرة.",
+      "goal": "قارن بين llama.cpp و vLLM في استهلاك الذاكرة واكتب تقريراً موثقاً",
+      "input": "أفضل الخوادم المحلية تختلف حسب الذاكرة.\n[[mission]] قارن بين llama.cpp و vLLM في استهلاك الذاكرة واكتب تقريراً موثقاً [[/mission]]",
+      "name": "mission_canonical",
+      "note": "Well-formed double-bracket block: the goal is extracted and the block leaves the display text."
+    },
+    {
+      "actions": [],
+      "clean": "الاسم «Muse» يحمل أكثر من معنى.",
+      "clean_after_mission": "الاسم «Muse» يحمل أكثر من معنى.",
+      "goal": "ابحث عن كل المعاني والتقاليد المرتبطة بهذا الاسم",
+      "input": "الاسم «Muse» يحمل أكثر من معنى.\n[mission] ابحث عن كل المعاني والتقاليد المرتبطة بهذا الاسم {MISSION_CLOSE}",
+      "name": "mission_brace_close_variant",
+      "note": "The variant from the shipped leak screenshot: single-bracket open + {MISSION_CLOSE}."
+    },
+    {
+      "actions": [],
+      "clean": "ملاحظة قصيرة.",
+      "clean_after_mission": "ملاحظة قصيرة.",
+      "goal": "ابحث عن معنى الاسم في الموسيقى والأساطير",
+      "input": "ملاحظة قصيرة.\n[[mission]] ابحث عن معنى الاسم في الموسيقى والأساطير [[mission_close]]",
+      "name": "mission_double_bracket_close_variant",
+      "note": "DIVERGENCE CASE: Rust's close regex accepts [[mission_close]]; the old webview regex did not, so the raw marker plus the goal text leaked into the chat bubble. src/lib/protocol.ts now accepts it."
+    },
+    {
+      "actions": [],
+      "clean": "خلاصة.",
+      "clean_after_mission": "خلاصة.",
+      "goal": "لخّص أحدث إصدارات Rust",
+      "input": "خلاصة.\n[mission] لخّص أحدث إصدارات Rust [/mission]",
+      "name": "mission_single_bracket",
+      "note": "Single-bracket open/close pair."
+    },
+    {
+      "actions": [],
+      "clean": "خلاصة.",
+      "clean_after_mission": "خلاصة.",
+      "goal": "قارن بين Ollama و LM Studio",
+      "input": "خلاصة.\n{{mission}} قارن بين Ollama و LM Studio {{/mission}}",
+      "name": "mission_double_brace_close",
+      "note": "Double-brace variant."
+    },
+    {
+      "actions": [],
+      "clean": "خلاصة.",
+      "clean_after_mission": "خلاصة.",
+      "goal": "ابحث عن أسعار كروت الشاشة في الخليج",
+      "input": "خلاصة.\n{mission} ابحث عن أسعار كروت الشاشة في الخليج {/mission}",
+      "name": "mission_single_brace_close",
+      "note": "Single-brace variant."
+    },
+    {
+      "actions": [],
+      "clean": "خلاصة.",
+      "clean_after_mission": "خلاصة.",
+      "goal": null,
+      "input": "خلاصة.\n[[mission]] [[/mission]]",
+      "name": "mission_empty_goal",
+      "note": "Empty goal: the block still leaves the display text, the goal is null."
+    },
+    {
+      "actions": [],
+      "clean": "خلاصة سريعة.\n\nواذكر المصادر في تقرير نهائي.",
+      "clean_after_mission": "خلاصة سريعة.\n\nواذكر المصادر في تقرير نهائي.",
+      "goal": "قارن بين llama.cpp و vLLM في الاستهلاك",
+      "input": "خلاصة سريعة.\n[[mission]] قارن بين llama.cpp و vLLM في الاستهلاك\nواذكر المصادر في تقرير نهائي.",
+      "name": "mission_unterminated_first_line_only",
+      "note": "Unterminated block: only the FIRST LINE after the marker becomes the goal; the lines after it stay in the display text."
+    },
+    {
+      "actions": [],
+      "clean": "خلاصة.\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "clean_after_mission": "خلاصة.\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "goal": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "input": "خلاصة.\n[[mission]] aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "name": "mission_unterminated_long_ascii_capped_300",
+      "note": "Unterminated with no newline: the goal is capped at 300 bytes, and the consumed text goes with it."
+    },
+    {
+      "actions": [],
+      "clean": "ملخص.\nععععععععععععععععععععععععععععععععععععععععععععععععععع",
+      "clean_after_mission": "ملخص.\nععععععععععععععععععععععععععععععععععععععععععععععععععع",
+      "goal": "aععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععع",
+      "input": "ملخص.\n[[mission]] aعععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععع",
+      "name": "mission_unterminated_long_arabic_byte_cap",
+      "note": "Unterminated, no newline, multi-byte text: the 300 cap counts BYTES; here byte 300 lands on a character boundary (2 bytes of prefix), so the goal is exactly 300 bytes before trimming."
+    },
+    {
+      "actions": [],
+      "clean": "ملخص.\nععععععععععععععععععععععععععععععععععععععععععععععععععع",
+      "clean_after_mission": "ملخص.\nععععععععععععععععععععععععععععععععععععععععععععععععععع",
+      "goal": "aععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععع",
+      "input": "ملخص.\n[[mission]]aعععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععععع",
+      "name": "mission_unterminated_multibyte_cap_floors_to_char_boundary",
+      "note": "Unterminated, no newline, and the 300-byte cap lands INSIDE a character (odd prefix): the pre-fix Rust code panicked here — 'byte index 300 is not a char boundary' — and chat.rs now floors the cap to 299 bytes. protocol.ts floors it identically."
+    },
+    {
+      "actions": [
+        {
+          "action": "open_url",
+          "target": "https://example.com"
+        }
+      ],
+      "clean": "سأفتح صفحة المشروع الآن.",
+      "clean_after_mission": "سأفتح صفحة المشروع الآن.\n[[sys]] {\"action\":\"open_url\",\"target\":\"https://example.com\"} [[/sys]]",
+      "goal": null,
+      "input": "سأفتح صفحة المشروع الآن.\n[[sys]] {\"action\":\"open_url\",\"target\":\"https://example.com\"} [[/sys]]",
+      "name": "sys_open_url",
+      "note": "Canonical sys block with a URL target."
+    },
+    {
+      "actions": [
+        {
+          "action": "open_path",
+          "target": "C:\\Users\\LENOVO\\Downloads"
+        }
+      ],
+      "clean": "سأفتح مجلد التنزيلات.",
+      "clean_after_mission": "سأفتح مجلد التنزيلات.\n[[sys]] {\"action\":\"open_path\",\"target\":\"C:\\\\Users\\\\LENOVO\\\\Downloads\"} [[/sys]]",
+      "goal": null,
+      "input": "سأفتح مجلد التنزيلات.\n[[sys]] {\"action\":\"open_path\",\"target\":\"C:\\\\Users\\\\LENOVO\\\\Downloads\"} [[/sys]]",
+      "name": "sys_open_path",
+      "note": "open_path action with a Windows path target."
+    },
+    {
+      "actions": [
+        {
+          "action": "run",
+          "target": "cargo test -p vara-core"
+        }
+      ],
+      "clean": "سأشغّل اختبارات النواة.",
+      "clean_after_mission": "سأشغّل اختبارات النواة.\n[[sys]] {\"action\":\"run\",\"target\":\"cargo test -p vara-core\"} [[/sys]]",
+      "goal": null,
+      "input": "سأشغّل اختبارات النواة.\n[[sys]] {\"action\":\"run\",\"target\":\"cargo test -p vara-core\"} [[/sys]]",
+      "name": "sys_run",
+      "note": "run action: the command is the target and always needs an approval card in the shell."
+    },
+    {
+      "actions": [
+        {
+          "action": "screenshot",
+          "target": "screen"
+        }
+      ],
+      "clean": "سألتقط صورة للشاشة الآن.",
+      "clean_after_mission": "سألتقط صورة للشاشة الآن.\n[[sys]] {\"action\":\"screenshot\",\"target\":\"\"} [[/sys]]",
+      "goal": null,
+      "input": "سألتقط صورة للشاشة الآن.\n[[sys]] {\"action\":\"screenshot\",\"target\":\"\"} [[/sys]]",
+      "name": "sys_screenshot_empty_target",
+      "note": "screenshot with an empty target is normalized to the literal screen."
+    },
+    {
+      "actions": [
+        {
+          "action": "screenshot",
+          "target": "screen"
+        }
+      ],
+      "clean": "",
+      "clean_after_mission": "[[sys]] {\"action\":\"screenshot\"} [[/sys]]",
+      "goal": null,
+      "input": "[[sys]] {\"action\":\"screenshot\"} [[/sys]]",
+      "name": "sys_screenshot_missing_target",
+      "note": "screenshot without a target field is normalized the same way."
+    },
+    {
+      "actions": [
+        {
+          "action": "computer_use",
+          "target": "{\"stop_on_error\":true,\"actions\":[{\"op\":\"screenshot\"},{\"op\":\"focus\",\"title\":\"Notepad\"},{\"op\":\"type\",\"text\":\"hello\",\"window\":\"Notepad\"}]}"
+        }
+      ],
+      "clean": "سأفتح المفكرة وأكتب فيها الآن.",
+      "clean_after_mission": "سأفتح المفكرة وأكتب فيها الآن.\n[[sys]] {\"action\":\"computer_use\",\"target\":\"{\\\"stop_on_error\\\":true,\\\"actions\\\":[{\\\"op\\\":\\\"screenshot\\\"},{\\\"op\\\":\\\"focus\\\",\\\"title\\\":\\\"Notepad\\\"},{\\\"op\\\":\\\"type\\\",\\\"text\\\":\\\"hello\\\",\\\"window\\\":\\\"Notepad\\\"}]}\"} [[/sys]]",
+      "goal": null,
+      "input": "سأفتح المفكرة وأكتب فيها الآن.\n[[sys]] {\"action\":\"computer_use\",\"target\":\"{\\\"stop_on_error\\\":true,\\\"actions\\\":[{\\\"op\\\":\\\"screenshot\\\"},{\\\"op\\\":\\\"focus\\\",\\\"title\\\":\\\"Notepad\\\"},{\\\"op\\\":\\\"type\\\",\\\"text\\\":\\\"hello\\\",\\\"window\\\":\\\"Notepad\\\"}]}\"} [[/sys]]",
+      "name": "sys_computer_use",
+      "note": "computer_use carries a compact JSON sequence as its target."
+    },
+    {
+      "actions": [
+        {
+          "action": "run",
+          "target": "cargo test"
+        }
+      ],
+      "clean": "تمام.",
+      "clean_after_mission": "تمام.\n[sys] ```json\n{\"action\":\"run\",\"target\":\"cargo test\"}\n``` {sys_close}",
+      "goal": null,
+      "input": "تمام.\n[sys] ```json\n{\"action\":\"run\",\"target\":\"cargo test\"}\n``` {sys_close}",
+      "name": "sys_fenced_json",
+      "note": "Mangled pair (single brackets + {sys_close}) around a ```json fenced body: the fence is tolerated."
+    },
+    {
+      "actions": [
+        {
+          "action": "open_url",
+          "target": "https://example.com"
+        }
+      ],
+      "clean": "",
+      "clean_after_mission": "[sys] {\"action\":\"open_url\",\"target\":\"https://example.com\"} [/sys]",
+      "goal": null,
+      "input": "[sys] {\"action\":\"open_url\",\"target\":\"https://example.com\"} [/sys]",
+      "name": "sys_single_bracket_pair",
+      "note": "Single-bracket sys pair is a known variant too."
+    },
+    {
+      "actions": [
+        {
+          "action": "open_url",
+          "target": "https://example.com"
+        }
+      ],
+      "clean": "سأفتح الموقع.",
+      "clean_after_mission": "سأفتح الموقع.\n[[sys]] {\"action\":\"open_url\",\"target\":\"https://example.com\"}",
+      "goal": null,
+      "input": "سأفتح الموقع.\n[[sys]] {\"action\":\"open_url\",\"target\":\"https://example.com\"}",
+      "name": "sys_unterminated_short",
+      "note": "Unterminated sys block, no newline, short body: everything after the marker is consumed and the action still parses."
+    },
+    {
+      "actions": [],
+      "clean": "سأشغّل أمراً.\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+      "clean_after_mission": "سأشغّل أمراً.\n[[sys]] {\"action\":\"run\",\"target\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+      "goal": null,
+      "input": "سأشغّل أمراً.\n[[sys]] {\"action\":\"run\",\"target\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+      "name": "sys_unterminated_long_ascii_capped_400",
+      "note": "Unterminated sys block, no newline: the cap is 400 bytes, so the JSON is cut, the action is dropped and the tail of the line stays in the display text (no marker leaks)."
+    },
+    {
+      "actions": [
+        {
+          "action": "open_url",
+          "target": "https://example.com"
+        },
+        {
+          "action": "run",
+          "target": "cargo fmt --all"
+        },
+        {
+          "action": "screenshot",
+          "target": "screen"
+        }
+      ],
+      "clean": "ثلاث خطوات بالترتيب:",
+      "clean_after_mission": "ثلاث خطوات بالترتيب:\n[[sys]] {\"action\":\"open_url\",\"target\":\"https://example.com\"} [[/sys]]\n[[sys]] {\"action\":\"run\",\"target\":\"cargo fmt --all\"} [[/sys]]\n[[sys]] {\"action\":\"screenshot\",\"target\":\"\"} [[/sys]]",
+      "goal": null,
+      "input": "ثلاث خطوات بالترتيب:\n[[sys]] {\"action\":\"open_url\",\"target\":\"https://example.com\"} [[/sys]]\n[[sys]] {\"action\":\"run\",\"target\":\"cargo fmt --all\"} [[/sys]]\n[[sys]] {\"action\":\"screenshot\",\"target\":\"\"} [[/sys]]",
+      "name": "sys_three_blocks",
+      "note": "Three blocks in one reply (the extractor cap) are all extracted and all removed from the display text."
+    },
+    {
+      "actions": [],
+      "clean": "مرحباً.",
+      "clean_after_mission": "مرحباً.\n[[sys]] {\"action\": \"open_url\", \"target\": } [[/sys]]",
+      "goal": null,
+      "input": "مرحباً.\n[[sys]] {\"action\": \"open_url\", \"target\": } [[/sys]]",
+      "name": "sys_invalid_json_dropped",
+      "note": "Malformed JSON: the block is still removed from the display text and the action is dropped."
+    },
+    {
+      "actions": [],
+      "clean": "مرحباً.",
+      "clean_after_mission": "مرحباً.\n[[sys]] {\"action\":\"format_disk\",\"target\":\"C_drive\"} [[/sys]]",
+      "goal": null,
+      "input": "مرحباً.\n[[sys]] {\"action\":\"format_disk\",\"target\":\"C_drive\"} [[/sys]]",
+      "name": "sys_unknown_action_dropped",
+      "note": "Valid JSON but an action outside the allow-list (open_url/open_path/run/screenshot/computer_use): dropped, block removed."
+    },
+    {
+      "actions": [],
+      "clean": "",
+      "clean_after_mission": "[[sys]] {\"action\":\"open_url\",\"target\":\"\"} [[/sys]]",
+      "goal": null,
+      "input": "[[sys]] {\"action\":\"open_url\",\"target\":\"\"} [[/sys]]",
+      "name": "sys_open_url_empty_target_dropped",
+      "note": "open_url requires a target: an empty target is dropped, the block is removed. Only screenshot may omit it."
+    },
+    {
+      "actions": [
+        {
+          "action": "open_url",
+          "target": "https://example.com"
+        }
+      ],
+      "clean": "إليك ما أعرفه باختصار.",
+      "clean_after_mission": "إليك ما أعرفه باختصار.\n\n[[sys]] {\"action\":\"open_url\",\"target\":\"https://example.com\"} [[/sys]]",
+      "goal": "قارن بين مزودي الاستدلال المحلي",
+      "input": "إليك ما أعرفه باختصار.\n[[mission]] قارن بين مزودي الاستدلال المحلي [[/mission]]\n[[sys]] {\"action\":\"open_url\",\"target\":\"https://example.com\"} [[/sys]]",
+      "name": "mixed_mission_and_sys",
+      "note": "Mission extraction runs first, then sys extraction — the exact order in src-tauri/src/commands.rs, so both protocols survive in one reply."
+    }
+  ]
+}

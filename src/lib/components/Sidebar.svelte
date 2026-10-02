@@ -14,21 +14,22 @@
   let busyDot = $derived(app.busy ? "var(--accent)" : app.paused ? "var(--warn)" : "var(--ok)");
 </script>
 
-<aside class="w-56 shrink-0 h-full border-e border-[var(--line)] bg-[var(--bg2)]/60 flex flex-col">
-  <div class="px-5 pt-5 pb-4 flex items-center gap-3">
-    <img src={face} alt="Vara" class="w-11 h-11 rounded-xl avatar-ring" />
+<aside class="w-60 shrink-0 h-full border-e border-[var(--line)] bg-[var(--bg2)] flex flex-col">
+  <div class="px-5 pt-5 pb-5 flex items-center gap-3 border-b border-[var(--line)]">
+    <img src={face} alt="Vara" class="w-10 h-10 rounded-lg avatar-ring" />
     <div>
       <div class="font-extrabold text-lg leading-none">Vara</div>
       <div class="text-[11px] text-[var(--muted)] mt-1">{t("app_motto")}</div>
     </div>
   </div>
 
-  <nav class="px-3 mt-2 flex flex-col gap-1">
+  <nav class="px-3 py-3 flex flex-col gap-1" aria-label="Primary">
     {#each nav as item (item.id)}
       <button
-        class="text-start px-3 py-2 rounded-xl text-sm flex items-center gap-3 transition-colors
+        class="text-start px-3 py-2.5 rounded-lg text-sm flex items-center gap-3 transition-colors
           {app.view === item.id ? 'nav-active' : 'text-[var(--muted)] hover:bg-[var(--card-hover)]'}"
         onclick={() => (app.view = item.id)}
+        aria-current={app.view === item.id ? "page" : undefined}
       >
         <span class="opacity-80">{item.icon}</span>
         {item.label()}
@@ -36,7 +37,7 @@
     {/each}
   </nav>
 
-  <div class="mt-auto px-4 pb-4 flex flex-col gap-2">
+  <div class="mt-auto px-4 py-4 border-t border-[var(--line)] flex flex-col gap-2">
     <button
       class="btn-ghost text-xs flex items-center justify-between"
       onclick={() => setLang(i18n.lang === "ar" ? "en" : "ar")}
@@ -55,8 +56,8 @@
         <span class="font-bold">{t("update_available")} · v{updater.available.version}</span>
       </button>
     {/if}
-    <div class="card px-3 py-2 flex items-center gap-2 text-xs">
-      <span class="w-2 h-2 rounded-full" style={"background:" + busyDot} class:pulse={app.busy}></span>
+    <div class="px-2 py-2 flex items-center gap-2 text-xs">
+      <span class="presence-dot" style={"background:" + busyDot} class:is-working={app.busy}></span>
       <span class="text-[var(--muted)]">
         {app.busy ? t("vara_is_working") : app.paused ? t("vara_paused") : t("vara_idle")}
       </span>

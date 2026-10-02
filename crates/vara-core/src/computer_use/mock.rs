@@ -9,11 +9,13 @@
 //! - **Focus mismatch**: `steal_focus()` simulates a dialog grabbing focus;
 //!   results carry `active` so the loop can diagnose it.
 //! - **Blind clicks refused**: coordinates never revealed by a SEE op in
-//!   this world make the adapter fail the action.
+//!   this world make the adapter fail the action — including window-relative
+//!   `click_win` points, which are pixels like any other; the world never
+//!   grounds an action from the action itself.
 //! - **Focus-first typing**: typing into a window that isn't focused fails
 //!   with guidance, mirroring the real #1 GUI-agent failure.
 
-use super::ops::{is_destructive_combo, CuOp, CuResult};
+use super::ops::{is_destructive_combo, normalize_combo, CuOp, CuResult};
 use super::ComputerUseAdapter;
 use std::collections::HashSet;
 
@@ -335,7 +337,12 @@ impl MockComputerUse {
                     },
                 }
             }
-            CuOp::ClickWin { title, rel_x, rel_y, .. } => {
+            CuOp::ClickWin {
+                title,
+                rel_x,
+                rel_y,
+                ..
+            } => {
                 let (wtitle, wbounds) = match self.find_window(title) {
                     Some(w) => (w.title.clone(), w.bounds),
                     None => {
@@ -353,6 +360,21 @@ impl MockComputerUse {
                     );
                 }
                 let abs = (wx + *rel_x, wy + *rel_y);
+                // Window-relative is still a pixel target: a point the model
+                // never saw is a blind hit, whether it wrote screen or window
+                // coordinates. The old world inserted `abs` into the grounding
+                // set here, i.e. it grounded itself from the action it was
+                // validating — the exact hole the loop's gate exists to close.
+                if !self.sees_point(abs.0, abs.1) {
+                    return CuResult::fail(
+                        "click_win",
+                        format!(
+                            "blind click_win blocked: window-relative ({rel_x},{rel_y}) is \
+                             absolute ({},{}) and no capture has shown that point",
+                            abs.0, abs.1
+                        ),
+                    );
+                }
                 self.seen.insert(abs);
                 let focused_title = wtitle.clone();
                 self.world.windows.iter_mut().for_each(|win| {
@@ -390,7 +412,11 @@ impl MockComputerUse {
             },
             CuOp::Type { text, window } => self.type_text(text, window.as_deref()),
             CuOp::Hotkey { keys, window } => {
-                let combo = keys.trim().to_lowercase();
+                // The chord is canonicalized the same way the loop classifies
+                // it: the world must react to the chord the policy judged, not
+                // to its spelling ("ALT + F4" closes here, as it does on
+                // Windows).
+                let combo = normalize_combo(keys);
                 if is_destructive_combo(&combo) {
                     // destructive: forced before_path + verify contract
                     if combo == "alt+f4" {

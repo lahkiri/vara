@@ -106,6 +106,11 @@ pub struct ReportRecord {
     pub backed_ratio: Option<f64>,
     pub verdict: Option<String>,
     pub repaired: bool,
+    /// The provenance receipt (gate version, ratios with Wilson CIs, claim
+    /// counts, C1/C2/C3, and why anything was not evaluable). Stored as JSON so
+    /// the report's honesty travels with it: no surface should render a bare
+    /// PASS without the denominator and interval behind it.
+    pub receipt_json: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -235,22 +240,18 @@ pub struct ChatMessageRecord {
     pub tokens: i64,
     pub status: String, // "streaming" | "ok" | "stopped" | "error"
     pub created_at: String,
-    #[serde(default = "default_message_kind")]
-    pub kind: String,
+    pub kind: String, // "text" | "mission" | "action"
     #[serde(default)]
     pub mission_id: Option<i64>,
 }
 
-fn default_message_kind() -> String {
-    "text".into()
-}
-
-/// An OS action Vara proposes from inside the chat ([[sys]] protocol).
-/// Execution always passes the autonomy policy — the model never runs
-/// anything by itself.
+/// An OS action as the model proposed it. Parsing is tolerant; **execution
+/// never uses this struct's payload directly** — the shell mints a
+/// `exec_policy::PlannedProposal` row from it, the owner approves that row, and
+/// `sys_execute` runs the target stored in the row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SysAction {
-    pub action: String, // "open_url" | "open_path" | "run"
+    pub action: String, // "open_url" | "open_path" | "run" | "screenshot" | "computer_use"
     pub target: String,
 }
 
@@ -339,7 +340,11 @@ impl Default for AutonomyConfig {
             open_paths: true,
             autostart: false,
             auto_start_missions: true,
-            run_commands: true,
+            // Opt-in, not opt-out: running commands is the widest action the
+            // entity can propose, so a fresh install cannot do it until the
+            // owner turns it on in Settings. Existing installs keep whatever
+            // they already chose (the field is `#[serde(default)]`).
+            run_commands: false,
             allow_screenshots: false,
             allow_computer_use: false,
             computer_use_allow_close: false,
@@ -387,6 +392,32 @@ impl Default for Settings {
     }
 }
 
+impl Settings {
+    /// The settings as they may be written to disk.
+    ///
+    /// The API key is the one field that must never be persisted when it came
+    /// from the environment: `VARA_PROVIDER_API_KEY` exists so the key can stay
+    /// off disk entirely, and the previous "re-apply env overrides, then save"
+    /// order wrote it into `settings.json` — the exact opposite of the promise
+    /// in `SECURITY.md` and AGENTS.md invariant 3. The shell calls this before
+    /// `save()` whenever the environment supplies the key.
+    pub fn without_api_key(&self) -> Settings {
+        let mut s = self.clone();
+        s.provider.api_key = String::new();
+        s
+    }
+
+    /// A copy safe to hand to the webview: no secret material, ever. The UI
+    /// only needs to know *whether* a key is configured.
+    pub fn for_webview(&self) -> Settings {
+        self.without_api_key()
+    }
+
+    pub fn has_api_key(&self) -> bool {
+        !self.provider.api_key.trim().is_empty()
+    }
+}
+
 // ---------- Plan protocol (planner <-> runner) ----------
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -422,4 +453,38 @@ pub struct RetrievedSource {
     pub title: String,
     pub fetched: bool,
     pub note_id: Option<i64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_can_be_stripped_before_persisting() {
+        let mut s = Settings::default();
+        s.provider.api_key = "sk-live-secret".into();
+        assert!(s.has_api_key());
+
+        let disk = s.without_api_key();
+        assert!(!disk.has_api_key(), "the key must not reach disk");
+        // Nothing else about the provider changes.
+        assert_eq!(disk.provider.base_url, s.provider.base_url);
+        assert_eq!(disk.provider.model, s.provider.model);
+        // The webview copy is the same promise.
+        assert!(!s.for_webview().has_api_key());
+        // The original is untouched (the running app still needs the key).
+        assert!(s.has_api_key());
+    }
+
+    #[test]
+    fn autonomy_ships_with_the_hands_off() {
+        let a = AutonomyConfig::default();
+        assert!(!a.allow_screenshots, "screen capture ships OFF");
+        assert!(!a.allow_computer_use, "computer use ships OFF");
+        assert!(!a.computer_use_allow_close, "destructive L2 ships OFF");
+        assert!(
+            !a.run_commands,
+            "running shell commands is opt-in, not a default"
+        );
+    }
 }

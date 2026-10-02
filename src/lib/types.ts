@@ -105,8 +105,28 @@ export interface ChatMessageRecord {
 
 /// An OS action Vara proposes from inside the chat ([[sys]] protocol).
 export interface SysAction {
-  action: string; // "open_url" | "open_path" | "run"
+  action: string; // "open_url" | "open_path" | "run" | "screenshot" | "computer_use"
   target: string;
+}
+
+/// A backend-owned proposal: the only thing the UI may approve or execute.
+///
+/// The webview never receives an executable payload it can forge — the shell
+/// mints these rows from model output, hands out ids, and `sys_execute` reads
+/// the target from the database row. `refused` is set when the policy rejected
+/// the proposal before the owner ever saw a card (an invalid URL, an empty
+/// target): those are shown as a refusal, never as an approval button.
+export interface ActionProposal {
+  id: number | null;
+  action: string;
+  target: string;
+  risk: "low" | "medium" | "high";
+  expires_at: number;
+  refused: string | null;
+  /// Present when the list comes from the backend (`list_action_proposals`):
+  /// which message proposed it, and where it is in the state machine.
+  message_id?: number | null;
+  state?: "pending" | "approved" | "denied" | "executing" | "executed" | "failed" | "expired";
 }
 
 export interface SysExecuteResult {
@@ -115,6 +135,14 @@ export interface SysExecuteResult {
   target: string;
   output: string;
   error: string;
+}
+
+/// A bundled rules document (`skills/vara/*/SKILL.md`), shown read-only.
+export interface SkillDoc {
+  name: string;
+  description: string;
+  body: string;
+  path: string;
 }
 
 export interface SendChatStart {
@@ -133,6 +161,7 @@ export interface ChatDonePayload {
   mission_goal: string | null;
   mission_started: number | null;
   sys_actions: SysAction[];
+  proposals?: ActionProposal[];
   error: string | null;
 }
 

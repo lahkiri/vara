@@ -183,7 +183,12 @@ pub fn extract_mission_proposal(reply: &str) -> (String, Option<String>) {
         ),
         None => {
             // Unterminated block: take the first line after the marker only.
-            let line_end = after_open.find('\n').unwrap_or(after_open.len().min(300));
+            // The byte cap is floored to a char boundary: a raw `min(300)`
+            // slice panics on long multi-byte replies ("byte index 300 is not
+            // a char boundary"), which would kill the chat turn.
+            let line_end = after_open
+                .find('\n')
+                .unwrap_or_else(|| floor_char_boundary(after_open, after_open.len().min(300)));
             (
                 after_open[..line_end].trim().to_string(),
                 open.end() + line_end,
@@ -216,7 +221,12 @@ pub fn extract_sys_actions(reply: &str) -> (String, Vec<SysAction>) {
         let (body_to, consumed_to) = match SYS_CLOSE_RE.find(after) {
             Some(close) => (open.end() + close.start(), open.end() + close.end()),
             None => {
-                let nl = open.end() + after.find('\n').unwrap_or(after.len().min(400));
+                // Same rule as the mission cap above: first line only, and the
+                // 400-byte fallback is floored to a char boundary.
+                let nl = open.end()
+                    + after
+                        .find('\n')
+                        .unwrap_or_else(|| floor_char_boundary(after, after.len().min(400)));
                 (nl, nl)
             }
         };
@@ -262,6 +272,17 @@ fn strip_code_fences(s: &str) -> &str {
         .unwrap_or(t);
     let t = t.strip_suffix("```").unwrap_or(t);
     t.trim()
+}
+
+/// Floors a byte index to the nearest UTF-8 char boundary of `s`, never past
+/// `idx`. The length caps above are byte caps, and `&s[..cap]` panics when the
+/// cap lands inside a multi-byte character (long Arabic/CJK replies).
+fn floor_char_boundary(s: &str, idx: usize) -> usize {
+    let mut i = idx.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 /// Tidy up the markerless text: no more than one blank line in a row.

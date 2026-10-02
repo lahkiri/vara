@@ -21,14 +21,14 @@
     <div class="text-[var(--muted)] text-sm tracking-wide">Vara…</div>
   </div>
 {:else}
-  <div class="flex h-screen overflow-hidden">
+  <div class="workspace-shell flex h-screen overflow-hidden">
     <Sidebar />
     <main class="flex-1 overflow-hidden">
       {#if app.view === "chat"}
         <ChatView />
       {:else}
         <div class="h-full overflow-y-auto">
-          <div class="max-w-5xl mx-auto px-6 py-6">
+          <div class="max-w-6xl mx-auto px-6 py-6">
             {#if app.view === "memory"}
               <MemoryView />
             {:else if app.view === "reports"}

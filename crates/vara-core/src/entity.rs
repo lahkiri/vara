@@ -59,6 +59,20 @@ impl EventSink for NullSink {
     fn emit(&self, _: EntityEvent) {}
 }
 
+/// Tokens reserved for writing (and, if needed, repairing) the report.
+///
+/// Retrieval stops at `budget - REPORT_BUDGET_TOKENS` so the report can always
+/// be written; a mission that spends everything on searching and then cannot
+/// afford to say what it found is the worst deal the product can make with the
+/// owner's money. The writer's own allowance is additionally capped by whatever
+/// has not been spent yet — the reserve is a floor, never a licence to overshoot.
+pub const REPORT_BUDGET_TOKENS: i64 = 3_000;
+
+/// What the writer/repair calls may ask the provider for, given the reserve.
+fn writer_max_tokens(writer_budget: i64) -> u32 {
+    writer_budget.clamp(256, REPORT_BUDGET_TOKENS) as u32
+}
+
 // ---------- runtime ----------
 
 pub struct EntityRuntime {
@@ -123,16 +137,17 @@ impl EntityRuntime {
         );
 
         // 1) Plan.
-        let plan = match self.make_plan(&mission.goal, &llm, &input.language).await {
+        let (plan, planner_spent) = match self.make_plan(&mission.goal, &llm, &input.language).await
+        {
             Ok((p, spent)) => {
                 self.record_spent(mission_id, spent);
-                p
+                (p, spent)
             }
             Err(e) => {
                 let _ =
                     self.db
                         .insert_action(Some(mission_id), "plan", "{}", false, &e.to_string());
-                return Ok(self.fail(mission_id, format!("planning failed: {e}")));
+                return Ok(self.fail(mission_id, 0, 0, format!("planning failed: {e}")));
             }
         };
         let dims_json = serde_json::to_string(&plan.dimensions).unwrap_or_else(|_| "[]".into());
@@ -162,9 +177,15 @@ impl EntityRuntime {
         self.set_state(EntityState::Working, Some(mission_id));
         let mut ledger: Vec<RetrievedSource> = Vec::new();
         let mut urls_seen: HashSet<String> = HashSet::new();
-        let mut spent: i64 = 0;
+        // Planning consumes real model tokens. Seed the mission ledger with
+        // that cost before any retrieval starts; otherwise a costly plan can
+        // silently reset the budget counter and make the cap advisory.
+        let mut spent: i64 = planner_spent as i64;
         let mut steps_done: i64 = 0;
         let mut plan_steps = plan.steps;
+        let _ = self
+            .db
+            .update_mission_progress(mission_id, steps_done, spent);
 
         let mut i = 0usize;
         while i < plan_steps.len() {
@@ -172,15 +193,15 @@ impl EntityRuntime {
                 let _ = self
                     .db
                     .update_mission_progress(mission_id, steps_done, spent);
-                return Ok(self.cancel(mission_id));
+                return Ok(self.cancel(mission_id, steps_done, spent));
             }
             while input.paused.load(Ordering::SeqCst) {
                 if input.cancel.load(Ordering::SeqCst) {
-                    return Ok(self.cancel(mission_id));
+                    return Ok(self.cancel(mission_id, steps_done, spent));
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
-            if steps_done >= max_steps || spent >= budget {
+            if steps_done >= max_steps || spent >= budget - REPORT_BUDGET_TOKENS {
                 self.activity(
                     "budget",
                     "Step/budget limit reached — moving to the report",
@@ -213,6 +234,12 @@ impl EntityRuntime {
                                         Some(&h.title),
                                     ) {
                                         urls_seen.insert(norm);
+                                        // A search snippet is NOT retrieved
+                                        // page text: cap what enters the ledger
+                                        // from a hit, so the writer cannot mine
+                                        // evidence out of a snippet nobody
+                                        // fetched. (C3 grades quotes against
+                                        // fetched page text only.)
                                         ledger.push(RetrievedSource {
                                             url: h.url.clone(),
                                             title: h.title.clone(),
@@ -343,7 +370,8 @@ impl EntityRuntime {
             });
 
             // Live replan every 4 executed steps — the organization stays alive.
-            if i % 4 == 0 && i < plan_steps.len() && spent < budget {
+            // Retrieval may only spend down to the report reserve.
+            if i % 4 == 0 && i < plan_steps.len() && spent < budget - REPORT_BUDGET_TOKENS {
                 match self
                     .replan(
                         &mission.goal,
@@ -372,16 +400,47 @@ impl EntityRuntime {
             }
         }
 
-        // 3) Report with provenance gate.
+        // 3) Report with provenance gate. The writer gets the LAST slice of the
+        // authorisation for its own reserved budget rather than competing with
+        // retrieval for whatever is left: on a long mission the retrieval steps
+        // could otherwise spend the whole budget and leave the report unwritable,
+        // which is the most expensive possible failure (all the cost, no report).
         if ledger.is_empty() {
             let _ = self
                 .db
                 .update_mission_progress(mission_id, steps_done, spent);
             return Ok(self.fail(
                 mission_id,
+                steps_done,
+                spent,
                 "no sources retrieved — nothing to report honestly".into(),
             ));
         }
+        let writer_budget = budget.saturating_sub(spent).clamp(0, REPORT_BUDGET_TOKENS);
+        if writer_budget == 0 {
+            let _ = self
+                .db
+                .update_mission_progress(mission_id, steps_done, spent);
+            return Ok(self.fail(
+                mission_id,
+                steps_done,
+                spent,
+                "mission budget exhausted before the report — nothing written".into(),
+            ));
+        }
+        let _ = self.db.insert_action(
+            Some(mission_id),
+            "budget",
+            &serde_json::json!({
+                "budget": budget,
+                "spent": spent,
+                "writer_reserved": writer_budget,
+                "retrieval_allowance": budget.saturating_sub(REPORT_BUDGET_TOKENS),
+            })
+            .to_string(),
+            true,
+            &format!("writer reserved {writer_budget} tokens"),
+        );
 
         self.set_state(EntityState::Reporting, Some(mission_id));
         self.activity(
@@ -392,12 +451,14 @@ impl EntityRuntime {
         let retrieved_urls: Vec<String> = ledger.iter().map(|s| s.url.clone()).collect();
         let sources_json = serde_json::to_value(&ledger).unwrap_or(serde_json::json!([]));
 
+        let writer_allowance = writer_max_tokens(writer_budget);
         let (markdown, w_spent) = match self
             .write_report(
                 &mission.goal,
                 &plan.dimensions,
                 &ledger,
                 &input.language,
+                writer_allowance,
                 &llm,
             )
             .await
@@ -407,7 +468,12 @@ impl EntityRuntime {
                 let _ = self
                     .db
                     .update_mission_progress(mission_id, steps_done, spent);
-                return Ok(self.fail(mission_id, format!("report writing failed: {e}")));
+                return Ok(self.fail(
+                    mission_id,
+                    steps_done,
+                    spent,
+                    format!("report writing failed: {e}"),
+                ));
             }
         };
         spent += w_spent as i64;
@@ -415,7 +481,15 @@ impl EntityRuntime {
             .db
             .update_mission_progress(mission_id, steps_done, spent);
 
-        let check = provenance::check_provenance(&markdown, &retrieved_urls);
+        // The gate's own audit: C1/C2 as always, plus Tier-0 quote grounding
+        // (C3) against the text that was actually retrieved. `backed_ratio` and
+        // the C1/C2 numbers are frozen; C3 can only make the verdict stricter,
+        // never looser. The receipt is stored with the report so a PASS is never
+        // shown without its denominator, its interval, and — when something
+        // could not be checked — the honest reason why.
+        let snapshots = self.snapshots_for(&ledger);
+        let (check, receipt, claims) =
+            provenance::check_provenance_full(&markdown, &retrieved_urls, &snapshots);
         let mut report_id = self
             .db
             .insert_report(
@@ -429,22 +503,44 @@ impl EntityRuntime {
             )
             .unwrap_or(0);
         let mut final_check = check;
+        let mut final_receipt = receipt;
+        if report_id > 0 {
+            let _ = self.db.set_report_receipt(
+                report_id,
+                &serde_json::to_value(&final_receipt).unwrap_or(serde_json::json!({})),
+                &serde_json::to_value(&claims).unwrap_or(serde_json::json!([])),
+            );
+        }
 
         if final_check.verdict == "FAIL" {
             self.activity(
                 "checker",
                 &format!(
-                    "Provenance FAIL ({}%) — one repair attempt…",
-                    (final_check.metrics.backed_ratio * 100.0) as i64
+                    "Provenance FAIL ({}% backed, {} claims) — one repair attempt…",
+                    (final_check.metrics.backed_ratio * 100.0) as i64,
+                    final_receipt.n_claims
                 ),
                 Some(mission_id),
             );
+            // The repair pass draws on the same reserve, and only while the
+            // reserve is still there: a repair is worth doing only if it can be
+            // paid for.
+            let repair_allowance = writer_max_tokens(budget.saturating_sub(spent));
             if let Ok((fixed, r_spent)) = self
-                .repair_report(&markdown, &final_check, &ledger, &input.language, &llm)
+                .repair_report(
+                    &markdown,
+                    &final_check,
+                    &final_receipt,
+                    &ledger,
+                    &input.language,
+                    repair_allowance,
+                    &llm,
+                )
                 .await
             {
                 spent += r_spent as i64;
-                let c2 = provenance::check_provenance(&fixed, &retrieved_urls);
+                let (c2, r2, claims2) =
+                    provenance::check_provenance_full(&fixed, &retrieved_urls, &snapshots);
                 report_id = self
                     .db
                     .insert_report(
@@ -457,7 +553,15 @@ impl EntityRuntime {
                         true,
                     )
                     .unwrap_or(report_id);
+                if report_id > 0 {
+                    let _ = self.db.set_report_receipt(
+                        report_id,
+                        &serde_json::to_value(&r2).unwrap_or(serde_json::json!({})),
+                        &serde_json::to_value(&claims2).unwrap_or(serde_json::json!([])),
+                    );
+                }
                 final_check = c2;
+                final_receipt = r2;
                 let _ = self
                     .db
                     .update_mission_progress(mission_id, steps_done, spent);
@@ -474,9 +578,11 @@ impl EntityRuntime {
         self.activity(
             "report",
             &format!(
-                "Report ready — provenance {} ({}% backed)",
+                "Report ready — provenance {} ({}% backed, {} claims checked, gate {})",
                 final_check.verdict,
-                (final_check.metrics.backed_ratio * 100.0) as i64
+                (final_check.metrics.backed_ratio * 100.0) as i64,
+                final_receipt.n_claims,
+                provenance::GATE_VERSION
             ),
             Some(mission_id),
         );
@@ -501,7 +607,16 @@ impl EntityRuntime {
         }
     }
 
-    fn fail(&self, mission_id: i64, err: String) -> MissionOutcome {
+    fn fail(
+        &self,
+        mission_id: i64,
+        steps_done: i64,
+        spent_tokens: i64,
+        err: String,
+    ) -> MissionOutcome {
+        let _ = self
+            .db
+            .update_mission_progress(mission_id, steps_done, spent_tokens);
         let _ = self
             .db
             .update_mission_status(mission_id, "failed", Some(&err));
@@ -515,11 +630,14 @@ impl EntityRuntime {
             verdict: None,
             backed_ratio: None,
             sources: 0,
-            spent_tokens: 0,
+            spent_tokens,
         }
     }
 
-    fn cancel(&self, mission_id: i64) -> MissionOutcome {
+    fn cancel(&self, mission_id: i64, steps_done: i64, spent_tokens: i64) -> MissionOutcome {
+        let _ = self
+            .db
+            .update_mission_progress(mission_id, steps_done, spent_tokens);
         let _ = self.db.update_mission_status(mission_id, "cancelled", None);
         self.activity(
             "mission",
@@ -534,7 +652,7 @@ impl EntityRuntime {
             verdict: None,
             backed_ratio: None,
             sources: 0,
-            spent_tokens: 0,
+            spent_tokens,
         }
     }
 
@@ -633,6 +751,7 @@ Rules: at most 4 steps. The LAST step must be {\"kind\":\"report\"}. If the mate
         dimensions: &[PlanDimension],
         ledger: &[RetrievedSource],
         language: &str,
+        max_tokens: u32,
         llm: &LlmClient,
     ) -> Result<(String, u64)> {
         let lang_name = lang_name(language);
@@ -643,7 +762,9 @@ HARD PROVENANCE RULES (enforced by a machine after you write):\n\
 2. Never invent sources, URLs, or citation numbers. Any URL absent from the ledger FAILS the report.\n\
 3. If a dimension lacks material, write 'Gap:' explicitly instead of inventing facts. Declared gaps are honest; fabricated sources are fatal.\n\
 4. Attach a citation to every factual claim.\n\
-5. End with a section headed exactly '## Sources' listing each cited source as: [n] URL — title.\n\n\
+5. End with a section headed exactly '## Sources' listing each cited source as: [n] URL — title.\n\
+6. Quote only word-for-word text you were given. A machine checks every quoted span against the retrieved text and the report FAILS if a quotation is not found there.\n\
+7. A ledger entry marked (snippet only) was seen in search results but its page was NOT retrieved. Use it to direct the reader, never as evidence, and never quote from it.\n\n\
 Tone: precise, dense, decision-ready. No filler, no self-praise."
         );
         let dims: Vec<String> = dimensions
@@ -656,11 +777,24 @@ Tone: precise, dense, decision-ready. No filler, no self-praise."
                 .note_id
                 .and_then(|id| self.note_body(id))
                 .unwrap_or_default();
+            // Retrieval scope is labelled, not implied: an abstract or a search
+            // snippet must not be silently promoted to "full text retrieved".
+            let scope = if s.fetched {
+                "retrieved"
+            } else {
+                "snippet only"
+            };
             ledger_lines.push(format!(
-                "[{}] {} — {}{}",
+                "[{}] {} — {} ({}{}){}",
                 i + 1,
                 s.title,
                 s.url,
+                scope,
+                if s.fetched {
+                    ", quotable"
+                } else {
+                    ", not quotable"
+                },
                 if body.is_empty() {
                     String::new()
                 } else {
@@ -676,18 +810,26 @@ Tone: precise, dense, decision-ready. No filler, no self-praise."
         let reply = llm
             .chat(
                 &[ChatMessage::system(system), ChatMessage::user(user)],
-                Some(2400),
+                Some(max_tokens),
             )
             .await?;
         Ok((reply.content.trim().to_string(), reply.total_tokens()))
     }
 
+    /// Repair pass. The brief is built **only** from the gate's deterministic
+    /// output — the failing citations, the unresolved references and the quotes
+    /// that were not found in the retrieved text. Research on self-correction is
+    /// unambiguous that a model asked to critique its own work without external
+    /// signal at best does nothing and at worst degrades it; the gate is the
+    /// external signal, so it is the only thing the repair prompt may contain.
     async fn repair_report(
         &self,
         report: &str,
         check: &ProvenanceResult,
+        receipt: &provenance::GateReceipt,
         ledger: &[RetrievedSource],
         language: &str,
+        max_tokens: u32,
         llm: &LlmClient,
     ) -> Result<(String, u64)> {
         let lang_name = lang_name(language);
@@ -699,22 +841,59 @@ Tone: precise, dense, decision-ready. No filler, no self-praise."
         let system = format!(
             "You repair a report that failed a structural citation check. Write in {lang_name}.\n\
 Keep the good content. Remove or fix invalid citations. If evidence is missing, replace the claim with an explicit 'Gap:' note. \
+Never keep a quotation that is not word-for-word in the ledger text. \
 The '## Sources' list must contain ONLY ledger entries, numbered exactly as in the ledger. Output the full corrected report only."
         );
+        let missing_quotes = if receipt.missing_quotes.is_empty() {
+            "- (none)".to_string()
+        } else {
+            receipt
+                .missing_quotes
+                .iter()
+                .take(10)
+                .map(|q| format!("- \"{}\"", truncate(q, 160)))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
         let user = format!(
-            "Ledger:\n{}\n\nCheck failures:\n- Unresolved [n] refs: {:?}\n- Cited URLs not in retrieval ledger: {}\n\nReport to fix:\n{}",
+            "Ledger:\n{}\n\nCheck failures:\n- Unresolved [n] refs: {:?}\n- Cited URLs not in retrieval ledger: {}\n\
+             - Quotations not found in the retrieved text (remove them or use the exact wording):\n{}\n\
+             - Not evaluated: {}\n\nReport to fix:\n{}",
             ledger_lines.join("\n"),
             check.unresolved_refs,
             check.cited_not_retrieved.join(", "),
+            missing_quotes,
+            receipt
+                .not_evaluable_reason
+                .clone()
+                .unwrap_or_else(|| "nothing".into()),
             report
         );
         let reply = llm
             .chat(
                 &[ChatMessage::system(system), ChatMessage::user(user)],
-                Some(2400),
+                Some(max_tokens),
             )
             .await?;
         Ok((reply.content.trim().to_string(), reply.total_tokens()))
+    }
+
+    /// The text that was actually retrieved, per URL — what C3 grounds quotes
+    /// against. Notes hold what a mission really fetched, so a claim quoting
+    /// text nobody retrieved is detectable offline, for free, with no network.
+    fn snapshots_for(&self, ledger: &[RetrievedSource]) -> Vec<provenance::RetrievedSnapshot> {
+        ledger
+            .iter()
+            .filter_map(|s| {
+                s.note_id
+                    .and_then(|id| self.note_body(id))
+                    .filter(|text| !text.trim().is_empty())
+                    .map(|text| provenance::RetrievedSnapshot {
+                        url: s.url.clone(),
+                        text,
+                    })
+            })
+            .collect()
     }
 
     /// Idle reflection — the heartbeat. Disabled by default; gentle by design.

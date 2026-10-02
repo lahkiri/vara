@@ -4915,7 +4915,7 @@ dependencies = [
 
 [[package]]
 name = "vara"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "notify",
@@ -4934,7 +4934,7 @@ dependencies = [
 
 [[package]]
 name = "vara-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "form_urlencoded",
  "futures-util",
@@ -4944,6 +4944,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
  "tokio",
  "url",

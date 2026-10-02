@@ -22,6 +22,11 @@
     return mdToHtml(stripProtocolBlocks(md));
   }
 
+  /// i18n key for a proposal's impact class (typed keys, so no string concat).
+  function riskKey(risk: "low" | "medium" | "high"): "risk_low" | "risk_medium" | "risk_high" {
+    return risk === "high" ? "risk_high" : risk === "medium" ? "risk_medium" : "risk_low";
+  }
+
   async function send(text: string): Promise<void> {
     const content = text.trim();
     if (!content || streamingNow()) return;
@@ -111,9 +116,9 @@
   }
 </script>
 
-<div class="flex h-[calc(100vh-2rem)] mx-auto max-w-6xl gap-0 overflow-hidden rounded-2xl card !p-0">
+<div class="flex h-full min-h-0 mx-auto max-w-[1440px] overflow-hidden">
   <!-- conversations rail -->
-  <aside class="w-60 shrink-0 border-e border-[var(--line)] bg-[var(--bg2)]/40 hidden sm:flex flex-col">
+  <aside class="thread-rail w-64 shrink-0 border-e border-[var(--line)] hidden sm:flex flex-col">
     <div class="p-3">
       <button class="btn w-full text-sm" onclick={() => newConversation()}>✦ {t("chat_new")}</button>
     </div>
@@ -122,11 +127,9 @@
         <div class="text-xs text-[var(--muted)] text-center py-6 px-2">{t("chat_no_conversations")}</div>
       {/if}
       {#each chat.conversations as c (c.id)}
-        <div
-          class="group flex items-center rounded-xl transition-colors {chat.activeId === c.id ? 'nav-active' : 'hover:bg-[var(--card-hover)]'}"
-        >
+        <div class="thread-item group flex items-center rounded-r-lg transition-colors {chat.activeId === c.id ? 'is-active' : 'hover:bg-[var(--card-hover)]'}">
           <button
-            class="text-start px-3 py-2.5 text-sm flex items-center gap-2 flex-1 min-w-0 {chat.activeId === c.id ? 'text-[var(--accent)] font-bold' : 'text-[var(--muted)]'}"
+            class="text-start px-3 py-3 text-sm flex items-center gap-2 flex-1 min-w-0 {chat.activeId === c.id ? 'text-[var(--text)] font-bold' : 'text-[var(--muted)]'}"
             onclick={() => openConversation(c.id)}
           >
             <span class="truncate flex-1">{c.title || t("chat_new")}</span>
@@ -146,9 +149,9 @@
   </aside>
 
   <!-- thread -->
-  <section class="flex-1 flex flex-col min-w-0">
+  <section class="flex-1 flex flex-col min-w-0 bg-[var(--bg)]">
     <!-- header -->
-    <header class="px-5 py-3 border-b border-[var(--line)] flex items-center gap-3">
+    <header class="px-6 py-3.5 border-b border-[var(--line)] flex items-center gap-3">
       <Avatar size={34} style={app.settings?.persona_style ?? "classic"} />
       <div class="min-w-0">
         <div class="font-bold text-sm truncate">{active?.title || t("chat_new")}</div>
@@ -158,13 +161,14 @@
           </button>
         {/if}
       </div>
-      {#if streamingNow()}
-        <span class="chip ms-auto border-[var(--accent)] text-[var(--accent)]">{t("chat_thinking")}</span>
-      {/if}
+      <div class="ms-auto flex items-center gap-2 text-[11px] text-[var(--muted)]">
+        <span class="presence-dot" class:is-working={streamingNow() || app.busy}></span>
+        <span>{streamingNow() ? t("chat_thinking") : app.busy ? t("vara_is_working") : app.paused ? t("vara_paused") : t("vara_idle")}</span>
+      </div>
     </header>
 
     <!-- messages -->
-    <div id="chat-scroll" class="flex-1 overflow-y-auto px-5 py-4">
+    <div id="chat-scroll" class="flex-1 overflow-y-auto px-6 py-6">
       {#if chat.messages.length === 0}
         <div class="h-full flex flex-col items-center justify-center text-center gap-4 py-10">
           <div class="avatar-ring rounded-3xl overflow-hidden">
@@ -287,14 +291,37 @@
                   {/if}
                   {#if chat.pendingSys[m.id]?.length}
                     <div class="mission-proposal p-3 mt-2" style="border-style:solid">
-                      <div class="text-[11px] font-bold text-[var(--warn)] mb-2">⚠ {t("sys_approval_title")}</div>
-                      {#each chat.pendingSys[m.id] as a (a.target + a.action)}
-                        <div class="flex items-center gap-2 flex-wrap py-1">
-                          <span class="text-xs">{actionLabel(a.action)}:</span>
-                          <span class="font-mono text-[11px] break-all flex-1 min-w-30">{a.target}</span>
-                          <button class="btn !py-1 !px-3 text-[11px]" onclick={() => void executeSysAction(m.id, a)}>{t("sys_execute")}</button>
-                          <button class="btn-ghost !py-1 !px-3 text-[11px]" onclick={() => dismissSysActions(m.id)}>{t("sys_dismiss")}</button>
-                        </div>
+                      <div class="text-[11px] font-bold text-[var(--warn)] mb-2">⚠ {t("sys_approval_title")}</div>                      {#each chat.pendingSys[m.id] as a (a.id ?? a.action + a.target)}
+                        {#if a.refused}
+                          <!-- The policy rejected this before the owner saw it:
+                               show the refusal instead of an approval button. -->
+                          <div class="flex items-start gap-2 flex-wrap py-1">
+                            <span class="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bad)] text-white">{t("sys_refused")}</span>
+                            <span class="text-xs">{actionLabel(a.action)}:</span>
+                            <span class="font-mono text-[11px] break-all flex-1 min-w-30">{a.target}</span>
+                          </div>
+                          <div class="text-[11px] text-[var(--muted)] pb-1 break-words">{a.refused}</div>
+                        {:else}
+                          <div class="flex items-center gap-2 flex-wrap py-1">
+                            <span
+                              class="text-[10px] px-1.5 py-0.5 rounded"
+                              class:risk-high={a.risk === "high"}
+                              class:risk-med={a.risk === "medium"}
+                              class:risk-low={a.risk === "low"}
+                            >{t(riskKey(a.risk))}</span>
+                            <span class="text-xs">{actionLabel(a.action)}:</span>
+                            <span class="font-mono text-[11px] break-all flex-1 min-w-30">{a.target}</span>
+                            {#if a.id !== null}
+                              <button class="btn !py-1 !px-3 text-[11px]" onclick={() => void executeSysAction(m.id, a)}>{t("sys_execute")}</button>
+                              <button class="btn-ghost !py-1 !px-3 text-[11px]" onclick={() => void dismissSysActions(m.id)}>{t("sys_dismiss")}</button>
+                            {:else}
+                              <!-- Older payloads / browser mock: display only.
+                                   Nothing was approved in the backend, so there is
+                                   nothing this button could honestly execute. -->
+                              <span class="text-[10px] text-[var(--muted)]">{t("sys_not_approvable")}</span>
+                            {/if}
+                          </div>
+                        {/if}
                       {/each}
                     </div>
                   {/if}
@@ -307,7 +334,7 @@
     </div>
 
     <!-- composer -->
-    <footer class="px-5 pb-4 pt-2 border-t border-[var(--line)]">
+    <footer class="px-6 pb-5 pt-3 border-t border-[var(--line)] bg-[var(--bg2)]">
       {#if chat.error}
         <div class="text-xs text-[var(--bad)] mb-2">{chat.error}</div>
       {/if}

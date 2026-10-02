@@ -1,5 +1,95 @@
 # Changelog
 
+## v0.6.0 — Approvals you can audit, provenance you can measure (2026-10-02)
+
+### Security: the model proposes, the backend decides
+- **Backend-minted action proposals** (`exec_policy.rs`, migration v5
+  `action_proposals`): the shell turns each `[[sys]]` proposal into a row with a
+  SHA-256 digest of exactly what was proposed, a risk class, a reason and a
+  two-minute expiry. The webview receives ids; `sys_approve(proposal_id)` takes
+  the owner's decision (compare-and-swap, single-use); `sys_execute(proposal_id)`
+  claims the approved row atomically, re-checks the digest, and executes the
+  target **stored in the row**. Approval cards survive reload.
+- **`run` is argv-only.** `exec_policy::tokenize_command` splits a command line
+  into arguments and refuses shell metacharacters; `CommandPolicy` denies shells
+  and system tools (`cmd`, `powershell`, `wmic`, `schtasks`, `reg`, `certutil`,
+  `shutdown`, …) and inline-code flags (`python -c`, `node -e`); paths are
+  confined with `confine_to_root` (escapes, ADS, reserved device names);
+  `child_env` scrubs every `*_API_KEY` / `*_TOKEN` / `VARA_PROVIDER_*` from a
+  spawned command's environment.
+- **Commands ship OFF** (`run_commands: false` by default); the risky defaults
+  are now opt-in across the board.
+- **The API key can no longer reach disk or the webview**:
+  `Settings::without_api_key()` is what gets persisted when the environment
+  supplies the key, `Settings::for_webview()` is what `get_bootstrap` returns
+  (plus `has_api_key` / `api_key_source`), and an empty key from the UI means
+  "keep the stored one".
+- ActLoop hardening: `allow_screenshots` is enforced **inside** the loop (SEE ops
+  refused, implicit evidence captures skipped, `unverified_mutations` reported
+  instead of faked); every pixel-coordinate op (including `click_win`) is
+  grounded; destructive ops are defused by the loop rather than trusted to the
+  adapter; combo detection is alias/whitespace tolerant.
+
+### Provenance gate: C3, receipts, and an unbreakable split
+- **C3 — quote grounding**: every quoted span in a claim must appear verbatim in
+  the retrieved text of a URL that claim cites. `check_provenance_full` returns
+  `(ProvenanceResult, GateReceipt, Vec<ClaimAudit>)`; C3 can only make a verdict
+  stricter. Missing snapshots are reported as *not evaluable with a reason*,
+  never as a pass, and never as a fabricated number.
+- **The panic is gone**: the body/sources split now uses an exact byte partition
+  (`split_inclusive`). A report ending in `## Sources` with no trailing newline,
+  or with CRLF line endings, used to panic the checker — which aborted the
+  mission task and left the entity stuck `busy` forever.
+- **`GateReceipt` stored with the report** (migration v6 `reports.receipt_json`):
+  gate version, backed ratio with a Wilson 95% interval, claim counts,
+  ref-resolution rate, C1/C2/C3, unresolved refs, missing quotes, and the
+  not-evaluable reason.
+- The repair pass is now driven **only** by the gate's deterministic failure
+  list (failing citations, unresolved refs, missing quotes) — never by
+  free-form self-critique.
+
+### Reliability
+- **Migrations are transactional and self-healing**: applied per statement inside
+  a transaction, tolerating already-applied objects; a version row lost to a
+  crash is re-applied instead of bricking the database. The FTS index rebuilds
+  itself when it drifts from the notes table.
+- **Report reserve** (`REPORT_BUDGET_TOKENS`): retrieval stops at
+  `budget − reserve`, so a mission can never spend everything and be unable to
+  write the report; the writer/repair `max_tokens` derives from what remains.
+- **Budgets are measurable**: streaming requests ask for
+  `stream_options.include_usage`, so mission accounting is no longer zero on
+  providers that omit usage by default.
+- The entity's `busy` flag resets through a drop guard — a panic in the runner
+  can no longer leave Vara permanently "already working".
+- `latest_report_for_mission` column/reader mismatch fixed (report attachments in
+  follow-up chats were silently dropped).
+
+### Protocol parity (Rust ↔ webview)
+- `src/lib/protocol.ts` is the webview's single parser; `state.svelte.ts`
+  re-exports it and no longer duplicates regexes.
+- `tests/fixtures/protocol_cases.json` (28 cases) is read by **both**
+  `crates/vara-core/tests/protocol_parity.rs` and `tests/protocol.test.ts`
+  (209 assertions, vitest, wired into CI).
+- Fixed: the webview's regex was missing the `[[mission_close]]` variant (raw
+  marker + goal leaked into the bubble), its unterminated-goal cap lacked Rust's
+  300-char rule, and `stripProtocolBlocks` stripped a different number of
+  mission blocks. Fixed in core: two caps sliced at raw byte offsets and could
+  **panic mid-character** on Arabic/emoji replies (`floor_char_boundary`).
+
+### Product
+- `list_skills` + Memory ▸ *Vara's own rules*: `skills/vara/*/SKILL.md` ship as
+  bundle resources and are readable offline — read-only prose, never executable.
+- Approval cards show a risk class (`low`/`medium`/`high`) and i18n'd labels;
+  policy-refused proposals render as a refusal instead of a dead button.
+- `SECURITY.md` rewritten around the real trust boundary (and what is *not*
+  protected); `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `README.md` updated to
+  match the code.
+
+### Tests
+`cargo test -p vara-core`: 53 lib + 15 computer-use harness + 5 protocol parity +
+29 provenance gate + 6 provenance regression. `npm run test`: 209 assertions.
+`npm run check`: 0 errors. `cargo fmt --all -- --check`: clean.
+
 ## v0.5.0 — The entity has hands: computer use as a native capability (2026-10-01)
 
 ### vara-core::computer_use — the ActLoop and the operation language

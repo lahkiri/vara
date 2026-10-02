@@ -129,7 +129,12 @@ impl LlmClient {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
-            "stream": true
+            "stream": true,
+            // Ask the provider for a usage block on the final chunk. Without it
+            // a mission's token accounting is guesswork, and a budget that
+            // cannot be measured cannot be enforced. Providers that do not know
+            // the field ignore it.
+            "stream_options": { "include_usage": true }
         });
         if let Some(mt) = max_tokens {
             body["max_tokens"] = serde_json::json!(mt);

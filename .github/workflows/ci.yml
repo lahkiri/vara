@@ -19,6 +19,25 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Test vara-core
         run: cargo test -p vara-core
+        # This is the release gate: the provenance gate, the action policy, the
+        # ActLoop harness and the protocol-parity lock all run here. A red run
+        # means a promise in AGENTS.md no longer holds — do not merge past it.
+
+  provenance-gate:
+    name: Provenance gate regression (v1 data)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The gate is the product's differentiator, so it gets its own job: the
+      # frozen v1 numbers (backed_ratio 0.308 / FAIL) and the C3 quote-grounding
+      # suite must never silently drift.
+      - name: Gate tests
+        run: |
+          cargo test -p vara-core --test provenance_tests
+          cargo test -p vara-core --test provenance_gate_tests
+          cargo test -p vara-core --test protocol_parity
 
   web-build:
     name: Frontend build + typecheck
@@ -32,6 +51,8 @@ jobs:
       - run: npm ci
       - name: svelte-check
         run: npm run check
+      - name: protocol parity tests (vitest, shared fixture)
+        run: npm run test
       - name: vite build
         run: npm run build
 

@@ -38,8 +38,24 @@ pub fn get_bootstrap(
         .unwrap_or_default();
     let stats = state.db.stats().map_err(|e| e.to_string())?;
     let active = state.db.active_mission().unwrap_or(None);
+    // The webview never receives the API key — only whether one is configured
+    // and where it comes from. A renderer compromise must not be able to read
+    // the owner's credentials.
+    let live = state.settings_snapshot();
+    let has_api_key = live.has_api_key();
+    let key_source = if std::env::var("VARA_PROVIDER_API_KEY")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        "env"
+    } else if has_api_key {
+        "file"
+    } else {
+        "none"
+    };
     Ok(serde_json::json!({
-        "settings": state.settings_snapshot(),
+        "settings": live.for_webview(),
+        "secret": { "has_api_key": has_api_key, "api_key_source": key_source },
         "status": {
             "busy": state.busy.load(Ordering::SeqCst),
             "paused": state.paused.load(Ordering::SeqCst),
@@ -82,22 +98,41 @@ pub fn save_settings(
         "en".into()
     };
     s.persona_style = new_settings.persona_style;
+    let incoming_key = new_settings.provider.api_key.trim().to_string();
     s.provider = ProviderConfig {
         base_url: base,
+        // The webview never holds the key, so an empty field means "keep the
+        // stored one", not "erase it".
+        api_key: if incoming_key.is_empty() {
+            s.provider.api_key.clone()
+        } else {
+            incoming_key
+        },
         ..new_settings.provider
     };
     s.autonomy = new_settings.autonomy;
     s.mission_defaults = new_settings.mission_defaults;
     s.watched_folder = new_settings.watched_folder;
-    // env > file: a VARA_PROVIDER_* injected key survives UI saves and never
-    // gets persisted into settings.json (secrets discipline).
+    // env > file for the *running* app: a VARA_PROVIDER_* override survives UI
+    // saves.
     crate::settings::apply_env_overrides(&mut s);
 
     let data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("data dir: {e}"))?;
-    settings::save(&data_dir, &s)?;
+    // …and an environment-provided key is never written to disk. Applying the
+    // override first and then saving is exactly how the key used to end up in
+    // settings.json, contradicting the promise in SECURITY.md.
+    let env_supplies_key = std::env::var("VARA_PROVIDER_API_KEY")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    let persisted = if env_supplies_key {
+        s.without_api_key()
+    } else {
+        s.clone()
+    };
+    settings::save(&data_dir, &persisted)?;
     *state.settings.write().unwrap_or_else(|p| p.into_inner()) = s.clone();
     crate::apply_settings_side_effects(&app);
     let _ = state
@@ -273,8 +308,20 @@ fn spawn_mission_runner(app: AppHandle, mission_id: i64, conversation_id: Option
     let app2 = app.clone();
 
     tauri::async_runtime::spawn(async move {
+        // A mission must never leave the entity stuck in `busy`. The old code
+        // stored the flag back only on the normal path, so a panic anywhere in
+        // the runner (a malformed report was enough) aborted the task with
+        // `busy = true` forever and every later mission was refused with
+        // "Vara is already working". A drop guard resets it on panic too.
+        struct BusyGuard(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for BusyGuard {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        let _guard = BusyGuard(busy_flag);
+
         let outcome = runtime.run_mission(mission_id, Arc::new(llm), inputs).await;
-        busy_flag.store(false, Ordering::SeqCst);
 
         if let Some(conv) = conversation_id {
             let (status, verdict, backed) = match &outcome {
@@ -500,20 +547,41 @@ pub fn list_events(
 
 // ---------- system ----------
 
+/// Open a link or file the owner clicked in the UI (a source URL in Memory or
+/// a report). This is a *user* action rather than a model proposal, so it needs
+/// no approval card — but it is still validated (http/https only, or a path
+/// inside the owner's folder) and journaled, because "the UI asked for it" must
+/// not be a way to reach an OS handler the policy never sees.
 #[tauri::command]
 pub fn sys_open(state: State<'_, AppState>, target: String) -> Result<(), String> {
-    let autonomy = state.settings_snapshot().autonomy;
-    if target.starts_with("http://") || target.starts_with("https://") {
+    use vara_core::exec_policy::{confine_to_root, validate_target, ProposalKind};
+    let snapshot = state.settings_snapshot();
+    let autonomy = snapshot.autonomy.clone();
+    let target = target.trim().to_string();
+
+    let is_url = target.starts_with("http://") || target.starts_with("https://");
+    if is_url {
         if !autonomy.open_urls {
             return Err("opening URLs is disabled in Settings".into());
         }
-        open::that(&target).map_err(|e| format!("open: {e}"))
+        let clean = validate_target(ProposalKind::OpenUrl, &target).map_err(|e| e.to_string())?;
+        open::that(&clean).map_err(|e| format!("open: {e}"))?;
     } else {
         if !autonomy.open_paths {
             return Err("opening paths is disabled in Settings".into());
         }
-        open::that(&target).map_err(|e| format!("open: {e}"))
+        if let Some(root) = owner_root(&snapshot) {
+            confine_to_root(std::path::Path::new(&root), &target).map_err(|e| e.to_string())?;
+        }
+        if !std::path::Path::new(&target).exists() {
+            return Err("path does not exist".into());
+        }
+        open::that(&target).map_err(|e| format!("open: {e}"))?;
     }
+    let _ = state
+        .db
+        .insert_event("info", "sys_open", &clip(&target, 160));
+    Ok(())
 }
 
 #[tauri::command]
@@ -739,6 +807,12 @@ pub fn send_chat(
                     vara_core::extract_mission_proposal(&reply.content);
                 let (clean, sys_actions) = vara_core::extract_sys_actions(&clean_after_mission);
 
+                // The model proposes; the CORE mints. Proposals become database
+                // rows here, before the webview learns about them, so the UI can
+                // only ever refer to a proposal that exists — never invent one.
+                let proposals =
+                    mint_action_proposals(&db, conversation_id, assistant_id, &sys_actions);
+
                 // chat-first autonomy: proposed missions start on their own
                 // (budget-capped, read-only) unless the owner is busy or disabled it
                 let mut started_mission: Option<i64> = None;
@@ -767,6 +841,7 @@ pub fn send_chat(
                         "mission_goal": goal,
                         "mission_started": started_mission,
                         "sys_actions": sys_actions,
+                        "proposals": proposals,
                         "error": null,
                     }),
                 );
@@ -873,22 +948,23 @@ fn clip(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
-/// Executes one shell command with a hard timeout, confined to the owner's
-/// home (or the watched folder when set). Output is capped — receipts, not dumps.
-async fn run_shell_command(target: &str, cwd: Option<String>) -> (bool, String, String) {
+/// Executes one reviewed command with a hard timeout. **argv-only**: the model's
+/// text was split into arguments by `vara_core::exec_policy::tokenize_command`
+/// and is never handed to a shell, so `&&`, pipes, redirections and backticks
+/// cannot compose a second command behind the owner's back. The child gets a
+/// scrubbed environment (no `VARA_PROVIDER_*`, no `*_API_KEY`) so a command the
+/// entity runs can never read the owner's provider key.
+async fn run_command(argv: &[String], cwd: Option<String>) -> (bool, String, String) {
     use tokio::process::Command;
-    #[cfg(target_os = "windows")]
-    let mut cmd = {
-        let mut c = Command::new("cmd");
-        c.arg("/C").arg(target);
-        c
+    let Some((program, args)) = argv.split_first() else {
+        return (false, String::new(), "empty command".into());
     };
-    #[cfg(not(target_os = "windows"))]
-    let mut cmd = {
-        let mut c = Command::new("sh");
-        c.arg("-c").arg(target);
-        c
-    };
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    cmd.env_clear();
+    for (k, v) in vara_core::exec_policy::child_env(std::env::vars()) {
+        cmd.env(k, v);
+    }
     if let Some(dir) = cwd {
         if std::path::Path::new(&dir).is_dir() {
             cmd.current_dir(dir);
@@ -1032,9 +1108,7 @@ fn run_computer_use(
     conversation_id: i64,
     sequence_json: &str,
 ) -> std::result::Result<(bool, String, String), String> {
-    use vara_core::computer_use::{
-        ActLoop, ComputerUseAdapter, GrantLevel, LoopPolicy, SidecarComputerUse,
-    };
+    use vara_core::computer_use::{ActLoop, GrantLevel, LoopPolicy, SidecarComputerUse};
 
     let seq = vara_core::computer_use::CuSequence::parse(sequence_json)
         .map_err(|e| format!("invalid sequence: {e}"))?;
@@ -1046,6 +1120,11 @@ fn run_computer_use(
         } else {
             GrantLevel::L1
         },
+        // Screen capture is what grounds every coordinate the loop may act on.
+        // With it off the ActLoop refuses SEE ops, so computer use cannot run —
+        // which is the honest reading of "screen capture ships OFF", rather
+        // than a hidden capability that quietly takes screenshots anyway.
+        allow_screenshots: snapshot.autonomy.allow_screenshots,
         ..Default::default()
     };
 
@@ -1138,7 +1217,7 @@ fn run_computer_use(
 
 /// Placeholder adapter used only for the pre-flight policy probe.
 struct NullAdapter;
-impl ComputerUseAdapter for NullAdapter {
+impl vara_core::computer_use::ComputerUseAdapter for NullAdapter {
     fn execute(
         &mut self,
         _op: &vara_core::computer_use::CuOp,
@@ -1147,25 +1226,263 @@ impl ComputerUseAdapter for NullAdapter {
     }
 }
 
+/// Wall-clock seconds since the epoch — the approval window's clock.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+// ---------- skills (bundled capability docs) ----------
+//
+// Vara ships the same `skills/vara/*/SKILL.md` documents this repository uses:
+// short, opinionated rules the owner can read and the entity can be held to
+// (provenance, DB discipline, secrets/policy, the experiment protocol). They are
+// bundled as resources so the installed app can show them offline, with no
+// network and no build step. Deliberately *not* executable: no scripts, no
+// plugin loading — a skill here is prose the owner inspects.
+#[derive(serde::Serialize)]
+pub struct SkillDoc {
+    pub name: String,
+    pub description: String,
+    pub body: String,
+    pub path: String,
+}
+
+/// Pull the `description:` line out of a SKILL.md YAML front-matter block.
+fn skill_description(text: &str) -> String {
+    let mut lines = text.lines();
+    if lines.next().map(|l| l.trim()) != Some("---") {
+        return String::new();
+    }
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            break;
+        }
+        if let Some(rest) = trimmed.strip_prefix("description:") {
+            return rest.trim().trim_matches('"').to_string();
+        }
+    }
+    String::new()
+}
+
+/// Locate the bundled skills directory in both a dev checkout and an install.
+fn skills_dir(handle: &AppHandle) -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(res) = handle.path().resource_dir() {
+        candidates.push(res.join("skills").join("vara"));
+        candidates.push(res.join("_up_").join("skills").join("vara"));
+    }
+    // Development checkout: src-tauri/../skills/vara
+    candidates.push(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("skills")
+            .join("vara"),
+    );
+    candidates.into_iter().find(|p| p.is_dir())
+}
+
+#[tauri::command]
+pub fn list_skills(handle: AppHandle) -> Result<Vec<SkillDoc>, String> {
+    let Some(dir) = skills_dir(&handle) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    let entries = std::fs::read_dir(&dir).map_err(|e| format!("skills dir: {e}"))?;
+    for entry in entries.flatten() {
+        let path = entry.path().join("SKILL.md");
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        out.push(SkillDoc {
+            name: entry.file_name().to_string_lossy().to_string(),
+            description: skill_description(&text),
+            body: text,
+            path: path.display().to_string(),
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// Turn the model's parsed `[[sys]]` actions into backend-owned proposals.
+///
+/// A proposal that the policy cannot even describe (a `javascript:` URL, an
+/// empty target, an over-long command) is **refused here and reported as
+/// refused** rather than shown as an approval card: the owner should never be
+/// asked to approve something that would be rejected one click later. The
+/// returned list is what the thread renders, and each entry carries the row id
+/// that `sys_approve` / `sys_execute` act on.
+fn mint_action_proposals(
+    db: &vara_core::Database,
+    conversation_id: i64,
+    message_id: i64,
+    actions: &[SysAction],
+) -> Vec<serde_json::Value> {
+    use vara_core::exec_policy::{plan_proposal, ProposalKind};
+    let now = unix_now();
+    let mut out = Vec::new();
+    for action in actions {
+        let Some(kind) = ProposalKind::parse(&action.action) else {
+            continue;
+        };
+        match plan_proposal(kind, &action.target, "", now) {
+            Ok(planned) => {
+                match db.insert_action_proposal(&planned, Some(conversation_id), Some(message_id)) {
+                    Ok(id) => out.push(serde_json::json!({
+                        "id": id,
+                        "action": kind.as_str(),
+                        "target": planned.target,
+                        "risk": planned.risk.as_str(),
+                        "expires_at": planned.expires_at,
+                        "refused": null,
+                    })),
+                    Err(e) => {
+                        let _ = db.insert_event(
+                            "warn",
+                            "proposal",
+                            &format!("could not record a proposal: {e}"),
+                        );
+                        out.push(serde_json::json!({
+                            "id": null,
+                            "action": kind.as_str(),
+                            "target": action.target,
+                            "risk": "high",
+                            "expires_at": now,
+                            "refused": format!("could not be recorded: {e}"),
+                        }));
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = db.insert_event(
+                    "warn",
+                    "proposal",
+                    &format!("refused {}: {e}", action.action),
+                );
+                out.push(serde_json::json!({
+                    "id": null,
+                    "action": action.action,
+                    "target": action.target,
+                    "risk": "high",
+                    "expires_at": now,
+                    "refused": e.to_string(),
+                }));
+            }
+        }
+    }
+    out
+}
+
+/// The list of proposals for a thread, newest first — used to re-render
+/// approval cards after a reload, so a pending decision survives a restart
+/// instead of silently disappearing from the thread.
+#[tauri::command]
+pub fn list_action_proposals(
+    state: State<'_, AppState>,
+    conversation_id: i64,
+    limit: Option<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let now = unix_now();
+    let _ = state.db.expire_action_proposals(now);
+    let rows = state
+        .db
+        .list_action_proposals(conversation_id, limit.unwrap_or(50))
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|p| {
+            serde_json::json!({
+                "id": p.id,
+                "action": p.kind.as_str(),
+                "target": p.target,
+                "risk": p.risk.as_str(),
+                "expires_at": p.expires_at,
+                "refused": serde_json::Value::Null,
+                "message_id": p.message_id,
+                "state": p.state.as_str(),
+            })
+        })
+        .collect())
+}
+
+/// The owner's decision over a proposal.
+///
+/// Proposals are minted by the shell from model output (see `chat_send`), carry
+/// a digest of exactly what was proposed, and expire after
+/// `exec_policy::PROPOSAL_TTL_SECS`. Deciding is a compare-and-swap against
+/// `state = 'pending'`, so a double click, a replay, or a stale UI cannot
+/// approve twice — and approving never executes anything by itself.
+#[tauri::command]
+pub fn sys_approve(
+    state: State<'_, AppState>,
+    proposal_id: i64,
+    approve: bool,
+) -> Result<(), String> {
+    let now = unix_now();
+    let _ = state.db.expire_action_proposals(now);
+    let decided = state
+        .db
+        .decide_action_proposal(proposal_id, approve, now)
+        .map_err(|e| e.to_string())?;
+    if decided {
+        Ok(())
+    } else {
+        Err("this proposal is no longer pending — it expired, was already decided, or does not exist".into())
+    }
+}
+
+/// Execute an approved proposal.
+///
+/// This is the only place an OS action runs, and it takes a **proposal id**
+/// rather than an action/target pair: the webview cannot name what to run, only
+/// which already-minted proposal to carry out. The target is read from the
+/// database row, re-checked against the digest that was approved, and only then
+/// executed under the current autonomy settings (which may have changed since
+/// the proposal was made — a proposal never outranks the owner's settings).
 #[tauri::command]
 pub async fn sys_execute(
     app: AppHandle,
     state: State<'_, AppState>,
-    conversation_id: i64,
-    action: String,
-    target: String,
+    proposal_id: i64,
 ) -> Result<SysExecuteResult, String> {
-    let snapshot = state.settings_snapshot();
-    let target = target.trim().to_string();
-    if target.is_empty() {
-        return Err("empty target".into());
+    use vara_core::exec_policy::{CommandPolicy, ProposalKind};
+
+    let now = unix_now();
+    let _ = state.db.expire_action_proposals(now);
+
+    // Atomic claim: approved + unexpired → executing, exactly once.
+    let Some(proposal) = state
+        .db
+        .claim_action_proposal(proposal_id, now)
+        .map_err(|e| e.to_string())?
+    else {
+        return Err(
+            "this proposal is not approved and pending (or it expired) — nothing was executed"
+                .into(),
+        );
+    };
+    if let Err(e) = proposal.may_execute_now(now) {
+        let _ = state
+            .db
+            .finish_action_proposal(proposal_id, false, "", &e.to_string(), now);
+        return Err(e.to_string());
     }
 
-    let (ok, output, error) = match action.as_str() {
-        "open_url" => {
-            if !target.starts_with("http://") && !target.starts_with("https://") {
-                (false, String::new(), "not an http(s) URL".into())
-            } else if !snapshot.autonomy.open_urls {
+    let snapshot = state.settings_snapshot();
+    let action = proposal.kind.as_str().to_string();
+    let target = proposal.target.clone();
+    let conversation_id = proposal.conversation_id.unwrap_or_default();
+
+    let (ok, output, error) = match proposal.kind {
+        ProposalKind::OpenUrl => {
+            if !snapshot.autonomy.open_urls {
                 (
                     false,
                     String::new(),
@@ -1178,23 +1495,30 @@ pub async fn sys_execute(
                 }
             }
         }
-        "open_path" => {
+        ProposalKind::OpenPath => {
             if !snapshot.autonomy.open_paths {
                 (
                     false,
                     String::new(),
                     "opening paths is disabled in Settings".into(),
                 )
-            } else if !std::path::Path::new(&target).exists() {
-                (false, String::new(), "path does not exist".into())
-            } else {
-                match open::that(&target) {
-                    Ok(_) => (true, String::new(), String::new()),
-                    Err(e) => (false, String::new(), e.to_string()),
+            } else if let Some(root) = owner_root(&snapshot) {
+                match vara_core::exec_policy::confine_to_root(std::path::Path::new(&root), &target)
+                {
+                    Err(e) => (false, String::new(), format!("refused: {e}")),
+                    Ok(_) if !std::path::Path::new(&target).exists() => {
+                        (false, String::new(), "path does not exist".into())
+                    }
+                    Ok(_) => match open::that(&target) {
+                        Ok(_) => (true, String::new(), String::new()),
+                        Err(e) => (false, String::new(), e.to_string()),
+                    },
                 }
+            } else {
+                (false, String::new(), "no owner folder to open from".into())
             }
         }
-        "run" => {
+        ProposalKind::Run => {
             if !snapshot.autonomy.run_commands {
                 (
                     false,
@@ -1202,19 +1526,14 @@ pub async fn sys_execute(
                     "running commands is disabled in Settings".into(),
                 )
             } else {
-                let cwd = snapshot
-                    .watched_folder
-                    .clone()
-                    .filter(|f| !f.trim().is_empty())
-                    .or_else(|| {
-                        std::env::var("USERPROFILE")
-                            .or_else(|_| std::env::var("HOME"))
-                            .ok()
-                    });
-                run_shell_command(&target, cwd).await
+                // argv-only: no shell, no composition, secrets scrubbed
+                match CommandPolicy::default().review(&target) {
+                    Err(e) => (false, String::new(), format!("refused: {e}")),
+                    Ok(argv) => run_command(&argv, owner_root(&snapshot)).await,
+                }
             }
         }
-        "screenshot" => {
+        ProposalKind::Screenshot => {
             // Privacy-sensitive: ships OFF, and even when enabled the chat
             // shows the explicit approval card before this arm is reached.
             if !snapshot.autonomy.allow_screenshots {
@@ -1227,7 +1546,7 @@ pub async fn sys_execute(
                 capture_screen(&app).await
             }
         }
-        "computer_use" => {
+        ProposalKind::ComputerUse => {
             // The entity's hands: a validated see→act→confirm sequence driven
             // through the ActLoop. Policy is enforced HERE — the model never
             // executes anything itself. Destructive close ops need the
@@ -1245,13 +1564,21 @@ pub async fn sys_execute(
                 }
             }
         }
-        _ => (false, String::new(), format!("unknown action: {action}")),
     };
 
-    // the thread keeps the receipt — every OS action is visible in the chat
+    let _ =
+        state
+            .db
+            .finish_action_proposal(proposal_id, ok, &clip(&output, 2000), &error, unix_now());
+
+    // the thread keeps the receipt — every OS action is visible in the chat,
+    // with the risk class and the reason the model gave for proposing it
     let receipt = serde_json::json!({
+        "proposal_id": proposal_id,
         "action": action,
         "target": target,
+        "risk": proposal.risk.as_str(),
+        "reason": proposal.reason,
         "ok": ok,
         "output": clip(&output, 2000),
         "error": error,
@@ -1273,7 +1600,13 @@ pub async fn sys_execute(
     let _ = state.db.insert_event(
         if ok { "info" } else { "warn" },
         "sys_action",
-        &format!("{action}: {}", clip(&target, 120)),
+        &format!(
+            "{} [{}/{}]: {}",
+            action,
+            proposal.risk.as_str(),
+            &proposal.digest[..8.min(proposal.digest.len())],
+            clip(&target, 120)
+        ),
     );
 
     Ok(SysExecuteResult {
@@ -1283,6 +1616,21 @@ pub async fn sys_execute(
         output,
         error,
     })
+}
+
+/// The folder the entity may act inside: the watched folder when set, else the
+/// owner's home. Used for `run`'s working directory and `open_path`'s
+/// confinement — it is a boundary, not decoration.
+fn owner_root(settings: &Settings) -> Option<String> {
+    settings
+        .watched_folder
+        .clone()
+        .filter(|f| !f.trim().is_empty())
+        .or_else(|| {
+            std::env::var("USERPROFILE")
+                .or_else(|_| std::env::var("HOME"))
+                .ok()
+        })
 }
 
 // ---------- updates (over-the-air) ----------

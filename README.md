@@ -23,6 +23,54 @@
 
 ---
 
+## What's new in v0.6.0 — Approvals you can audit, provenance you can measure
+
+- **The approval card is now a real gate, not a decoration.** A proposed action
+  is minted by the core into a database row with a digest, a risk class and a
+  two-minute window; you approve *that row* by id, and `sys_execute` re-reads the
+  target **from the row** — once. A compromised or buggy UI cannot invent an
+  action, name its own target, or replay an old approval.
+- **`run` is argv-only. There is no shell.** Command lines are tokenized into
+  arguments; pipes, redirections, `&&`, backticks and `$()` are refused; `cmd`,
+  `powershell`, `wmic`, `schtasks`, `reg`, `certutil`, `shutdown`… are denied
+  outright; inline-code flags (`python -c`, `node -e`) too. Paths are confined
+  to your folder and the child gets a **scrubbed environment** — the provider key
+  is not in it.
+- **Commands ship OFF.** `run_commands` is now opt-in, like screenshots and
+  computer use.
+- **Provenance C3: quote grounding.** The gate now also checks that every quoted
+  span appears **verbatim** in the text that was actually retrieved for the URL
+  that claim cites. A report can no longer reach `PASS` with invented quotes —
+  and a `GateReceipt` (gate version, backed ratio with a Wilson interval, claim
+  counts, and an explicit "not evaluated, because…") is stored with every report
+  so a verdict never travels without its denominator.
+- **A panic that could freeze the entity is gone.** A report ending exactly in
+  `## Sources` used to panic the checker, which aborted the mission task and left
+  Vara permanently "busy"; the split is now an exact byte partition, and the busy
+  flag resets on every exit path.
+- **Migrations self-heal; FTS rebuilds itself.** A crash between applying a
+  migration and recording it used to make the database unopenable forever
+  (`duplicate column name`). Migrations now run per statement inside a
+  transaction, recognise already-applied objects, and rebuild the full-text index
+  when FTS5 becomes available after a period in `LIKE` mode.
+- **Secrets stay off disk and out of the webview.** An environment-provided key
+  is never written to `settings.json`; the UI receives `has_api_key` and its
+  source, never the key.
+- **One parser per side, locked by a fixture.** Rust and the webview used to
+  disagree about `[[mission_close]]` (the marker leaked into the bubble) and
+  about multi-byte caps (a mid-character panic). Both now read
+  `tests/fixtures/protocol_cases.json` and are asserted on both sides — 209
+  frontend assertions plus a Rust parity test in CI.
+- **The report can no longer be starved by research.** Missions reserve a writer
+  budget: retrieval stops at `budget − reserve`, and the arithmetic is journaled.
+- **Your skills are visible.** The same `skills/vara/*/SKILL.md` rules the
+  project uses are bundled and readable in Memory ▸ *Vara's own rules* — read-only
+  prose, never executable.
+
+Full details, honest limits and the fixes that are still open:
+[`SECURITY.md`](SECURITY.md) · [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
+[`docs/PROVENANCE.md`](docs/PROVENANCE.md) · [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
 ## What's new in v0.5.0 — The entity has hands
 
 - **Computer use as a native capability.** Vara can now propose whole
@@ -90,13 +138,15 @@ v2 design with frozen decision thresholds.
 | 💬 **A companion, not a form** | Chat with Vara in persistent conversations: follow-up messages, streaming replies, and answers grounded in her actual memory (FTS-matched notes) — the Dot/Muse-style continuity, on your desktop |
 | ✦ **From talk to action** | When a request needs real research, Vara proposes a mission from inside the chat — one click turns it into a fully-gated research run. And any report has a **“Discuss report”** button that opens a follow-up thread with the report in context |
 | 🧠 **Persistent entity** | Missions, memory (SQLite WAL + FTS5), reflections, event log — all in one portable data folder |
-| 🛡 **Provenance gate** | Structural citation check (C1: cited ∈ retrieved · C2: refs resolve) on every report, with an automatic repair pass |
+| 🛡 **Provenance gate** | C1 (cited ∈ retrieved) · C2 (`[n]` resolves) · C3 (quotes verbatim in the retrieved text) on every report, with an automatic repair pass and a stored receipt carrying intervals and denominators |
+| 🔐 **Approvals that hold** | Every OS action becomes a backend-minted proposal you approve by id: single-use, time-boxed, digest-bound, and journaled as a receipt in the thread |
 | 🌐 **Bring any model** | OpenAI-compatible protocol: Z.ai, OpenAI, Ollama, LM Studio, llama-server, vLLM… |
-| 🔎 **Honest research loop** | Plan → search/fetch → live replanning → clean-context writer → checker → repair → report |
+| 🔎 **Honest research loop** | Plan → search/fetch → live replanning → clean-context writer → checker → repair → report, with a reserved writer budget |
 | 🛰 **Over-the-air updates** | The app checks GitHub releases on every launch and installs new versions with one click — signed updates, no manual reinstalling |
 | 🖥 **Lives with your system** | System tray, close-to-tray, notifications, optional autostart, watched-folder indexing (`file://` provenance) |
 | 🎭 **8 states, 5 styles** | Happy / Focused / Thinking / Excited / Serious / Working / Planning / On Mission — Classic / Dark / Stealth / Tech / Nature |
 | 🌍 **AR + EN** | Full RTL/LTR interface switching |
+| 📜 **Her rules, in the app** | The entity's own operating rules (`skills/vara/*/SKILL.md`) ship with the app and are readable in Memory — read-only prose, never executable code |
 | 🔓 **Open source forever** | MIT. The provenance checker and its tests ship in the repo. |
 
 ## Download
@@ -119,8 +169,19 @@ npm run tauri build    # produce the installer
 1. Open **Settings → Model provider**, pick a preset (Z.ai / OpenAI / Ollama / LM Studio / llama-server), paste base URL + key + model.
 2. Click **Test connection**.
 3. Go to **Chat** and just talk — that is the heart of the app. Ask “who are you?” or anything else; Vara replies with streaming answers grounded in her memory and keeps the thread for follow-ups.
-4. Ask for research (or press **Turn into a mission** on a proposal): Vara plans, searches, and writes a report that passes the **provenance badge** gate (PASS/FAIL + backed %).
+4. Ask for research (or press **Turn into a mission** on a proposal): Vara plans, searches, and writes a report that passes the **provenance badge** gate (PASS/FAIL + backed % + a stored receipt).
 5. Press **Discuss report** to open a follow-up conversation with the report attached — dig into the findings without leaving the chat.
+6. Anything Vara wants to *do* on your machine arrives as an **approval card** with a risk class: nothing runs until you press Run, and the receipt lands in the same thread. Commands, screenshots and computer use are off until you enable them in Settings.
+
+## Security, in one paragraph
+
+The model may only *propose*. Proposals become backend rows with a digest and a
+two-minute window, you approve them by id, and execution reads the target from
+the row — once. Commands are argv-only (no shell) with denied programs, confined
+paths and a scrubbed environment; the API key is never written to disk when it
+comes from the environment and never reaches the webview. Windows sandboxing is
+**not** here yet — see [`SECURITY.md`](SECURITY.md) for what is protected and
+what is not.
 
 ## Architecture
 
@@ -132,11 +193,13 @@ npm run tauri build    # produce the installer
 │        │ events │ commands                │                               │
 │        ▼                                  ▼                               │
 │  ┌──────────────────────── vara-core (pure logic) ─────────────────────┐  │
-│  │ entity.rs  state machine · mission runner · budget · replan         │  │
-│  │ chat.rs    identity · persona flavors · memory grounding · proposal │  │
-│  │ provenance.rs  C1/C2 citation gate  (regression-tested vs v1 data)  │  │
-│  │ db.rs  SQLite WAL · FTS5-with-fallback · notes/sources/conversations│  │
-│  │ tools.rs  web search + page fetch (html→text)   llm.rs  any model   │  │
+│  │ entity.rs  state machine · mission runner · budget + report reserve │  │
+│  │ chat.rs    identity · persona · memory grounding · proposal parsing │  │
+│  │ provenance.rs  C1/C2/C3 gate + receipt (intervals, claim counts)    │  │
+│  │ exec_policy.rs argv-only commands · proposals · digests · confinement│ │
+│  │ db.rs  SQLite WAL · self-healing migrations · FTS5-with-fallback    │  │
+│  │ computer_use/  ActLoop + grant ladder + mock/sidecar adapters       │  │
+│  │ tools.rs  web search + page fetch    llm.rs  any OpenAI-compatible  │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -147,10 +210,10 @@ More: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
 
 ## Security notes
 
-- Your API key is stored **only** in `settings.json` inside the app data folder, never synced.
-- The provenance gate is structural, not magical: it proves *citations came from real
-  retrievals*, not that a retrieved source is true. Treat it as a floor, not a ceiling.
-- See [`SECURITY.md`](SECURITY.md) for reporting guidelines.
+- Your API key is stored **only** in `settings.json` inside the app data folder (or not at all when you supply it through `VARA_PROVIDER_API_KEY` — an environment key is never persisted), never synced, and never handed to the webview or to a command Vara runs.
+- The model can only propose actions. Approvals are backend rows (digest + expiry, single-use); `run` is argv-only with no shell, so pipes, redirections and chained commands cannot slip past a card.
+- The provenance gate is structural, not magical: it proves *citations came from real retrievals and quotes from real retrieved text*, not that a retrieved source is true. Treat it as a floor, not a ceiling.
+- There is no OS-level sandbox yet, and computer use needs an external sidecar that this repository does not ship. Both are stated plainly in [`SECURITY.md`](SECURITY.md).
 
 ## License
 

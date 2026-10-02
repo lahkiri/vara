@@ -17,8 +17,57 @@ use serde::{Deserialize, Serialize};
 /// `_DESTRUCTIVE_COMBOS` — firing one forces verification evidence.
 pub const DESTRUCTIVE_COMBOS: [&str; 5] = ["alt+f4", "ctrl+w", "ctrl+q", "ctrl+f4", "ctrl+shift+w"];
 
+/// Canonical modifier order. `normalize_combo` reorders modifiers so spelling
+/// variants of one chord land on one string ("shift+ctrl+w" and
+/// "ctrl+shift+w" are the same chord), never on two different policy verdicts.
+const MODIFIER_ORDER: [&str; 4] = ["ctrl", "alt", "shift", "win"];
+
+/// Canonical form of a hotkey chord: split on `+`, trim, lowercase, fold
+/// aliases (`control`→`ctrl`, `option`→`alt`, `cmd`/`command`/`super`/`win`/
+/// `windows`/`meta`→`win`), then emit modifiers first in a fixed order and the
+/// remaining keys in the order written: `normalize_combo(" Control + W ")`
+/// and `normalize_combo("ctrl+W")` both give `"ctrl+w"`.
+///
+/// This exists because the destructive-combo gate must not be bypassable by
+/// spelling: a chord that *is* `ctrl+w` has to classify like `ctrl+w` no
+/// matter how the model typed it. Model-authored spacing and aliases are hit
+/// constantly; a classifier that only lowercases is a hole, not a parser.
+pub fn normalize_combo(keys: &str) -> String {
+    let mut modifiers: Vec<String> = Vec::new();
+    let mut others: Vec<String> = Vec::new();
+    for part in keys.split('+') {
+        let part = part.trim().to_lowercase();
+        if part.is_empty() {
+            continue; // "ctrl++" or a trailing '+' is noise, not a key
+        }
+        let canonical = match part.as_str() {
+            "control" => "ctrl",
+            "option" => "alt",
+            "cmd" | "command" | "super" | "windows" | "meta" => "win",
+            other => other,
+        };
+        if MODIFIER_ORDER.contains(&canonical) {
+            if !modifiers.iter().any(|m| m == canonical) {
+                modifiers.push(canonical.to_string()); // "ctrl+ctrl+w" is one ctrl
+            }
+        } else {
+            others.push(canonical.to_string());
+        }
+    }
+    modifiers.sort_by_key(|m| {
+        MODIFIER_ORDER
+            .iter()
+            .position(|x| *x == m.as_str())
+            .unwrap_or(usize::MAX)
+    });
+    modifiers.extend(others);
+    modifiers.join("+")
+}
+
+/// Does this chord destroy something? Classification uses the canonical form,
+/// so aliases, padding, and modifier order cannot smuggle a chord past L2.
 pub fn is_destructive_combo(keys: &str) -> bool {
-    DESTRUCTIVE_COMBOS.contains(&keys.trim().to_lowercase().as_str())
+    DESTRUCTIVE_COMBOS.contains(&normalize_combo(keys).as_str())
 }
 
 /// Autonomy ladder — every op maps to exactly one level. The ActLoop and the
@@ -162,6 +211,34 @@ fn default_wait() -> f32 {
     0.1
 }
 
+/// Where a coordinate op lands. The grounding gate treats both frames of
+/// reference the same — blind is blind — and only the refusal message differs,
+/// because "take a screenshot of the screen" and "take a screenshot of the
+/// window" are different instructions for the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelTarget {
+    /// Screen pixels.
+    Absolute(i32, i32),
+    /// Pixels relative to the named window's top-left corner.
+    WindowRelative(i32, i32),
+}
+
+impl PixelTarget {
+    pub fn coords(&self) -> (i32, i32) {
+        match *self {
+            PixelTarget::Absolute(x, y) | PixelTarget::WindowRelative(x, y) => (x, y),
+        }
+    }
+
+    /// Frame of reference, for the message the model has to act on.
+    pub fn frame(&self) -> &'static str {
+        match self {
+            PixelTarget::Absolute(..) => "screen",
+            PixelTarget::WindowRelative(..) => "window-relative",
+        }
+    }
+}
+
 impl CuOp {
     pub fn tag(&self) -> &'static str {
         match self {
@@ -215,20 +292,73 @@ impl CuOp {
         !self.is_see() && !matches!(self, CuOp::Wait { .. } | CuOp::IgnoreErrors)
     }
 
-    /// Absolute coordinates this op would act at, when grounded.
-    pub fn absolute_coords(&self) -> Option<(i32, i32)> {
+    /// Does this op demand L2 because it can destroy user work — a close op or
+    /// a destructive hotkey chord? Read from the grant ladder so there is one
+    /// classification, not two that can drift apart.
+    pub fn is_destructive(&self) -> bool {
+        self.grant_level() >= GrantLevel::L2
+    }
+
+    /// The pixel target this op would act at, if it has one — the input to the
+    /// ActLoop's grounding gate.
+    ///
+    /// `click_win` belongs here. Window-relative pixels are still pixels aimed
+    /// at a spot on screen: firing one before any SEE is exactly the blind hit
+    /// the gate exists to refuse, and a window that moved since the model
+    /// planned makes the point wrong even when the title is right. Ops
+    /// addressed by *name* (`focus`, `type`/`hotkey`/`key`/`keys` with a
+    /// window, `close_*`) are deliberately not pixel targets — they cannot land
+    /// on the wrong widget, and gating them would only add friction.
+    pub fn pixel_target(&self) -> Option<PixelTarget> {
         match self {
             CuOp::Click {
                 x: Some(x),
                 y: Some(y),
                 ..
-            } => Some((*x, *y)),
-            CuOp::Move { x, y } => Some((*x, *y)),
+            } => Some(PixelTarget::Absolute(*x, *y)),
+            // A click with no coordinates lands wherever the cursor happens to
+            // be; the adapter decides, so there is nothing here to ground.
+            CuOp::ClickWin { rel_x, rel_y, .. } => {
+                Some(PixelTarget::WindowRelative(*rel_x, *rel_y))
+            }
+            CuOp::Move { x, y } => Some(PixelTarget::Absolute(*x, *y)),
             CuOp::Scroll {
                 x: Some(x),
                 y: Some(y),
                 ..
-            } => Some((*x, *y)),
+            } => Some(PixelTarget::Absolute(*x, *y)),
+            _ => None,
+        }
+    }
+
+    /// Absolute coordinates this op would act at, when it has any.
+    /// Window-relative targets are excluded — see `pixel_target`.
+    pub fn absolute_coords(&self) -> Option<(i32, i32)> {
+        match self.pixel_target()? {
+            PixelTarget::Absolute(x, y) => Some((x, y)),
+            PixelTarget::WindowRelative(..) => None,
+        }
+    }
+
+    /// The harmless twin of a destructive op: `confirm` forced off, so the best
+    /// an adapter can do with it is preview. The ActLoop applies this itself
+    /// whenever the policy has not granted L2 — a model-authored `confirm` is a
+    /// request, never an authorization, and the loop must not depend on the
+    /// adapter to remember that.
+    ///
+    /// `None` means the op has no dry-run form. A destructive hotkey is the
+    /// case that matters: a chord cannot be "previewed", so the loop's dry run
+    /// is to never send it at all.
+    pub fn as_dry_run(&self) -> Option<CuOp> {
+        match self {
+            CuOp::CloseWindow { title, .. } => Some(CuOp::CloseWindow {
+                title: title.clone(),
+                confirm: false,
+            }),
+            CuOp::CloseApp { process, .. } => Some(CuOp::CloseApp {
+                process: process.clone(),
+                confirm: false,
+            }),
             _ => None,
         }
     }
@@ -395,5 +525,260 @@ impl CuResult {
             next: Some("read the error, re-see the screen, re-plan".into()),
             hint: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The normalizer is the whole defence against spelling bypasses, so its
+    /// contract is pinned directly: aliases, padding, case, modifier order.
+    #[test]
+    fn normalize_combo_canonicalizes_spelling() {
+        let cases = [
+            ("ctrl+s", "ctrl+s"),
+            (" Control + S ", "ctrl+s"),
+            ("CTRL+S", "ctrl+s"),
+            ("control+s", "ctrl+s"),
+            ("alt+f4", "alt+f4"),
+            ("Option + F4", "alt+f4"),
+            ("shift+ctrl+w", "ctrl+shift+w"),
+            ("w+ctrl", "ctrl+w"),
+            ("ctrl+ctrl+w", "ctrl+w"),
+            ("cmd+q", "win+q"),
+            ("command+q", "win+q"),
+            ("super+q", "win+q"),
+            ("win+q", "win+q"),
+            ("shift+F4", "shift+f4"),
+            ("ctrl++w", "ctrl+w"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(normalize_combo(input), want, "normalize_combo({input:?})");
+        }
+    }
+
+    /// Every spelling of a destructive chord must demand L2 — including the
+    /// padded and aliased forms models actually emit, which the old
+    /// trim+lowercase classifier waved through as L1.
+    #[test]
+    fn destructive_combo_variants_all_classify_l2() {
+        let variants = [
+            "alt+f4",
+            "Alt+F4",
+            "ALT + F4",
+            "alt + f4",
+            "ctrl+w",
+            "ctrl+W",
+            "CTRL + w",
+            "Control + W",
+            "control + w",
+            "w+ctrl",
+            "ctrl+q",
+            "Ctrl + Q",
+            "ctrl+f4",
+            "Ctrl + F4",
+            "ctrl+shift+w",
+            "Ctrl + Shift + W",
+            "shift+ctrl+w",
+        ];
+        for v in variants {
+            assert!(is_destructive_combo(v), "{v:?} must classify destructive");
+            let op = CuOp::Hotkey {
+                keys: v.into(),
+                window: None,
+            };
+            assert_eq!(op.grant_level(), GrantLevel::L2, "{v:?} must demand L2");
+            assert!(op.is_destructive(), "{v:?} is destructive");
+        }
+        // Harmless chords stay L1: the classifier must not over-block either.
+        for v in ["ctrl+s", "ctrl+a", "ctrl+c", "alt+tab", "enter"] {
+            assert!(!is_destructive_combo(v), "{v:?} is not destructive");
+            assert_eq!(
+                CuOp::Hotkey {
+                    keys: v.into(),
+                    window: None
+                }
+                .grant_level(),
+                GrantLevel::L1,
+                "{v:?} stays L1"
+            );
+        }
+    }
+
+    /// The grounding gate's input: every op that aims at a pixel has a target,
+    /// every op that aims at a name does not.
+    #[test]
+    fn pixel_target_covers_every_coordinate_op() {
+        let click = CuOp::Click {
+            x: Some(10),
+            y: Some(20),
+            button: "left".into(),
+            clicks: 1,
+            window: None,
+        };
+        assert_eq!(click.pixel_target(), Some(PixelTarget::Absolute(10, 20)));
+        assert_eq!(click.absolute_coords(), Some((10, 20)));
+
+        let click_win = CuOp::ClickWin {
+            title: "Notepad".into(),
+            rel_x: 5,
+            rel_y: 6,
+            button: "left".into(),
+            clicks: 1,
+        };
+        assert_eq!(
+            click_win.pixel_target(),
+            Some(PixelTarget::WindowRelative(5, 6)),
+            "window-relative pixels are still pixels"
+        );
+        assert_eq!(click_win.absolute_coords(), None);
+        assert_eq!(click_win.pixel_target().unwrap().frame(), "window-relative");
+
+        assert_eq!(
+            CuOp::Move { x: 1, y: 2 }.pixel_target(),
+            Some(PixelTarget::Absolute(1, 2))
+        );
+        assert_eq!(
+            CuOp::Scroll {
+                clicks: 3,
+                x: Some(4),
+                y: Some(5)
+            }
+            .pixel_target(),
+            Some(PixelTarget::Absolute(4, 5))
+        );
+        // A scroll with no coordinates goes to the cursor/window — not a target.
+        assert_eq!(
+            CuOp::Scroll {
+                clicks: 3,
+                x: None,
+                y: None
+            }
+            .pixel_target(),
+            None
+        );
+
+        // Name-targeted ops stay out of the coordinate gate.
+        let named = [
+            CuOp::Focus {
+                title: "Notepad".into(),
+            },
+            CuOp::Type {
+                text: "hi".into(),
+                window: Some("Notepad".into()),
+            },
+            CuOp::Hotkey {
+                keys: "ctrl+s".into(),
+                window: Some("Notepad".into()),
+            },
+            CuOp::Key {
+                key: "enter".into(),
+                window: Some("Notepad".into()),
+            },
+            CuOp::Keys {
+                sequence: "ctrl+a ctrl+c".into(),
+                window: Some("Notepad".into()),
+            },
+            CuOp::Wait { seconds: 0.5 },
+            CuOp::CloseWindow {
+                title: "Notepad".into(),
+                confirm: false,
+            },
+        ];
+        for op in named {
+            assert_eq!(op.pixel_target(), None, "{} is name-targeted", op.tag());
+        }
+    }
+
+    /// The loop's dry-run conversion: the confirm flag is dropped, nothing else
+    /// about the op changes, and non-destructive ops are left alone.
+    #[test]
+    fn as_dry_run_forces_confirm_off() {
+        let close = CuOp::CloseWindow {
+            title: "Notepad".into(),
+            confirm: true,
+        };
+        assert_eq!(
+            close.as_dry_run(),
+            Some(CuOp::CloseWindow {
+                title: "Notepad".into(),
+                confirm: false
+            })
+        );
+        let kill = CuOp::CloseApp {
+            process: "notepad.exe".into(),
+            confirm: true,
+        };
+        assert_eq!(
+            kill.as_dry_run(),
+            Some(CuOp::CloseApp {
+                process: "notepad.exe".into(),
+                confirm: false
+            })
+        );
+        // Already a dry run → nothing to change; the adapter still previews.
+        assert_eq!(
+            CuOp::CloseWindow {
+                title: "x".into(),
+                confirm: false
+            }
+            .as_dry_run(),
+            Some(CuOp::CloseWindow {
+                title: "x".into(),
+                confirm: false
+            })
+        );
+        // A destructive hotkey has no dry-run form: "not sent" is the loop's job.
+        assert_eq!(
+            CuOp::Hotkey {
+                keys: "alt + f4".into(),
+                window: None
+            }
+            .as_dry_run(),
+            None
+        );
+        assert_eq!(
+            CuOp::Type {
+                text: "hi".into(),
+                window: None
+            }
+            .as_dry_run(),
+            None
+        );
+    }
+
+    /// Destructiveness comes from the ladder, so a variant chord is L2 for both
+    /// the loop and the shell's approval card.
+    #[test]
+    fn destructive_predicate_follows_the_ladder() {
+        assert!(CuOp::CloseWindow {
+            title: "x".into(),
+            confirm: false
+        }
+        .is_destructive());
+        assert!(CuOp::CloseApp {
+            process: "x".into(),
+            confirm: false
+        }
+        .is_destructive());
+        assert!(CuOp::Hotkey {
+            keys: "Control + W".into(),
+            window: None
+        }
+        .is_destructive());
+        assert!(!CuOp::Screenshot {
+            region: None,
+            settle: 0.1
+        }
+        .is_destructive());
+        assert!(!CuOp::Click {
+            x: Some(1),
+            y: Some(1),
+            button: "left".into(),
+            clicks: 1,
+            window: None
+        }
+        .is_destructive());
     }
 }
