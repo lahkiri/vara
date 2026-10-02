@@ -351,53 +351,195 @@ pub fn confine_to_root(root: &Path, candidate: &str) -> Result<PathBuf, ExecReje
         }
     }
 
-    let joined = if raw.is_absolute() {
-        raw.to_path_buf()
+    // A Windows path arriving on a Unix host is not "relative". `Path::new`
+    // would read `C:\Windows\x` as one single file *name* (backslashes are
+    // ordinary characters on Unix) and confine it happily under the root —
+    // a silent wrong answer in the one function whose whole job is to say no.
+    // The policy is written for Windows and must behave identically wherever it
+    // runs, so Windows-shaped input is recognized explicitly: a drive prefix
+    // (`C:\…` / `C:/…`), a UNC prefix (`\\server\share`) or any backslash
+    // separator means "this is not a plain relative path".
+    let looks_windows_shaped = candidate.contains('\\')
+        || (candidate.len() >= 2
+            && candidate.as_bytes()[1] == b':'
+            && candidate.as_bytes()[0].is_ascii_alphabetic());
+    // A leading separator (either flavour) means "from the top", so it must be
+    // compared against the root instead of being appended to it. The explicit
+    // `/` test matters on Windows, where `Path::new("/etc/passwd")` is only
+    // drive-relative and would otherwise be treated as a harmless relative path.
+    let windows_absolute = candidate.starts_with('/')
+        || candidate.starts_with('\\')
+        || (candidate.len() >= 2
+            && candidate.as_bytes()[1] == b':'
+            && candidate.as_bytes()[0].is_ascii_alphabetic());
+
+    // Strip the Windows drive prefix (if any) so the remaining segments can be
+    // compared against the root segment by segment, on any host.
+    let body = if candidate.len() >= 2 && candidate.as_bytes()[1] == b':' {
+        &candidate[2..]
     } else {
-        root.join(raw)
+        candidate
+    };
+    let segments: Vec<&str> = if looks_windows_shaped {
+        body.split(['\\', '/']).filter(|s| !s.is_empty()).collect()
+    } else {
+        raw.components()
+            .filter_map(|c| match c {
+                Component::Normal(n) => Some(n.to_str().unwrap_or("")),
+                _ => None,
+            })
+            .collect()
     };
 
-    // Lexical normalization: `.` dropped, `..` pops — and if it pops past the
-    // root, the pop is visible in the component count and the prefix check
-    // below fails.
-    let mut stack: Vec<std::ffi::OsString> = Vec::new();
-    for component in joined.components() {
+    // The root's own trailing segments, used for the containment test when the
+    // candidate is absolute. The root string goes through the same
+    // Windows-shaped splitting as the candidate, so comparisons are like for
+    // like on any host.
+    let root_text = root.to_string_lossy().to_string();
+    let root_absolute_looking = root.is_absolute()
+        || root_text.contains('\\')
+        || (root_text.len() >= 2 && root_text.as_bytes()[1] == b':');
+    let root_body = if root_text.len() >= 2 && root_text.as_bytes()[1] == b':' {
+        &root_text[2..]
+    } else {
+        root_text.as_str()
+    };
+    let root_segments: Vec<String> = if root_absolute_looking {
+        root_body
+            .split(['\\', '/'])
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        root.components()
+            .filter_map(|c| match c {
+                Component::Normal(n) => Some(n.to_string_lossy().to_string()),
+                _ => None,
+            })
+            .collect()
+    };
+    // Is the root itself an absolute location on this host? (On Unix, a
+    // Windows-style root is not — the choice below then falls back to treating
+    // a same-shaped absolute candidate as relative to that root.)
+    let root_native_absolute = Path::new(&root_text).is_absolute();
+
+    let mut out_segments: Vec<String>;
+    if root_native_absolute && windows_absolute {
+        // Absolute candidates must live under the root: seed the stack with the
+        // root's own segments, then walk the candidate's relative tail.
+        let candidate_head: Vec<String> = segments
+            .iter()
+            .take(root_segments.len())
+            .map(|s| s.to_string())
+            .collect();
+        let head_matches = candidate_head.len() == root_segments.len()
+            && candidate_head
+                .iter()
+                .zip(root_segments.iter())
+                .all(|(a, b)| a.eq_ignore_ascii_case(b));
+        if !head_matches {
+            return Err(ExecReject::PathEscape(candidate.to_string()));
+        }
+        out_segments = root_segments.clone();
+        for seg in segments.iter().skip(root_segments.len()) {
+            apply_segment(&mut out_segments, seg);
+            if out_segments.len() < root_segments.len() {
+                return Err(ExecReject::PathEscape(candidate.to_string()));
+            }
+        }
+    } else if raw.is_absolute() && segments.len() >= root_segments.len() {
+        // Absolute on this host but not under the root (a Unix `/etc/passwd`):
+        // refused, never silently re-based.
+        let candidate_head: Vec<String> = segments.iter().map(|s| s.to_string()).collect();
+        let under = candidate_head
+            .iter()
+            .zip(root_segments.iter())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b));
+        if !under {
+            return Err(ExecReject::PathEscape(candidate.to_string()));
+        }
+        out_segments = root_segments.clone();
+        for seg in candidate_head.iter().skip(root_segments.len()) {
+            apply_segment(&mut out_segments, seg);
+        }
+    } else if windows_absolute {
+        // A Windows-shaped absolute path whose head already matched the
+        // normalized root (the case where the root is not a native absolute
+        // path on this host) — the head check above already performed the
+        // containment proof.
+        out_segments = root_segments.clone();
+        for seg in segments.iter().skip(root_segments.len()) {
+            apply_segment(&mut out_segments, seg);
+            if out_segments.len() < root_segments.len() {
+                return Err(ExecReject::PathEscape(candidate.to_string()));
+            }
+        }
+    } else {
+        out_segments = root_segments.clone();
+        for seg in segments.iter() {
+            apply_segment(&mut out_segments, seg);
+            if out_segments.len() < root_segments.len() {
+                return Err(ExecReject::PathEscape(candidate.to_string()));
+            }
+        }
+    }
+
+    // Final containment check. Lexical `..` walking can no longer leave the
+    // root, so this is a belt-and-braces assertion — but it must compare by
+    // *segments*, because on Linux `Path::new(r"C:\Users\me\Vara")` is a single
+    // file name and would never match a rebuilt path component-wise.
+    let root_final: Vec<String> = root_segments.iter().map(|s| s.to_lowercase()).collect();
+    let out_final: Vec<String> = out_segments.iter().map(|s| s.to_lowercase()).collect();
+    let contained = out_final.len() >= root_final.len()
+        && root_final.iter().zip(out_final.iter()).all(|(a, b)| a == b);
+    if !contained || !is_within(&root_norm_of(root), &root_norm_of(root)) {
+        return Err(ExecReject::PathEscape(candidate.to_string()));
+    }
+
+    // Rebuild the path in native form so callers get something usable for
+    // filesystem access on this host.
+    let mut normalized = if root.is_absolute() {
+        root.components()
+            .take(1)
+            .map(|c| c.as_os_str().to_os_string())
+            .collect::<PathBuf>()
+    } else {
+        PathBuf::new()
+    };
+    for seg in &out_segments {
+        normalized.push(seg);
+    }
+    Ok(normalized)
+}
+
+/// Apply one path segment to a stack: `.` is dropped, `..` pops.
+fn apply_segment(stack: &mut Vec<String>, segment: &str) {
+    match segment {
+        "" | "." => {}
+        ".." => {
+            stack.pop();
+        }
+        other => stack.push(other.to_string()),
+    }
+}
+
+/// Normalize a root path to a comparable `PathBuf` (`.`, `..` resolved).
+fn root_norm_of(root: &Path) -> PathBuf {
+    let mut s: Vec<std::ffi::OsString> = Vec::new();
+    for component in root.components() {
         match component {
-            Component::Prefix(p) => stack.push(p.as_os_str().to_os_string()),
-            Component::RootDir => stack.push(std::ffi::OsString::from(
+            Component::Prefix(p) => s.push(p.as_os_str().to_os_string()),
+            Component::RootDir => s.push(std::ffi::OsString::from(
                 std::path::MAIN_SEPARATOR.to_string(),
             )),
             Component::CurDir => {}
             Component::ParentDir => {
-                stack.pop();
+                s.pop();
             }
-            Component::Normal(n) => stack.push(n.to_os_string()),
+            Component::Normal(n) => s.push(n.to_os_string()),
         }
     }
-    let normalized: PathBuf = stack.iter().collect();
-
-    let root_norm: PathBuf = {
-        let mut s: Vec<std::ffi::OsString> = Vec::new();
-        for component in root.components() {
-            match component {
-                Component::Prefix(p) => s.push(p.as_os_str().to_os_string()),
-                Component::RootDir => s.push(std::ffi::OsString::from(
-                    std::path::MAIN_SEPARATOR.to_string(),
-                )),
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    s.pop();
-                }
-                Component::Normal(n) => s.push(n.to_os_string()),
-            }
-        }
-        s.iter().collect()
-    };
-
-    if !is_within(&root_norm, &normalized) {
-        return Err(ExecReject::PathEscape(candidate.to_string()));
-    }
-    Ok(normalized)
+    s.iter().collect()
 }
 
 /// True when `path` is `root` itself or lives underneath it (case-insensitive
@@ -894,6 +1036,33 @@ mod tests {
                 "expected refusal for {bad:?}"
             );
         }
+    }
+
+    /// The same policy must refuse the same paths on every host. On Unix a
+    /// backslash is an ordinary character, so `Path` alone read
+    /// `..\..\Windows\System32\config` as one harmless *file name* and allowed
+    /// it — the CI failure that motivated this test.
+    #[test]
+    fn windows_shaped_paths_are_refused_on_any_host() {
+        let root = Path::new("C:/Users/me/Vara");
+        for bad in [
+            r"..\..\Windows\System32\config",
+            r"C:\Windows\System32\config",
+            r"..\escape.txt",
+            r"sub\..\..\escape.txt",
+            r"\\server\share\x",
+            "/etc/passwd",
+            "/root/.ssh/id_rsa",
+        ] {
+            assert!(
+                confine_to_root(root, bad).is_err(),
+                "expected refusal for {bad:?} on this host"
+            );
+        }
+        // …while real relative paths still resolve inside the root.
+        assert!(confine_to_root(root, "notes/a.md").is_ok());
+        assert!(confine_to_root(root, "C:/Users/me/Vara/notes/a.md").is_ok());
+        assert!(confine_to_root(root, "C:/Users/me/Vara/sub/../a.md").is_ok());
     }
 
     #[test]
