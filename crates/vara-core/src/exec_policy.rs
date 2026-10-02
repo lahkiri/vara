@@ -359,182 +359,156 @@ pub fn confine_to_root(root: &Path, candidate: &str) -> Result<PathBuf, ExecReje
     // runs, so Windows-shaped input is recognized explicitly: a drive prefix
     // (`C:\…` / `C:/…`), a UNC prefix (`\\server\share`) or any backslash
     // separator means "this is not a plain relative path".
-    let looks_windows_shaped = candidate.contains('\\')
-        || (candidate.len() >= 2
-            && candidate.as_bytes()[1] == b':'
-            && candidate.as_bytes()[0].is_ascii_alphabetic());
-    // A leading separator (either flavour) means "from the top", so it must be
-    // compared against the root instead of being appended to it. The explicit
-    // `/` test matters on Windows, where `Path::new("/etc/passwd")` is only
-    // drive-relative and would otherwise be treated as a harmless relative path.
-    let windows_absolute = candidate.starts_with('/')
-        || candidate.starts_with('\\')
-        || (candidate.len() >= 2
-            && candidate.as_bytes()[1] == b':'
-            && candidate.as_bytes()[0].is_ascii_alphabetic());
+    //
+    // The comparison below is **textual** and host-independent on purpose: it
+    // never asks `Path` how it feels about a string, because the answer differs
+    // between Linux and Windows and that difference was the bug.
+    let is_drive_prefixed = candidate.len() >= 2
+        && candidate.as_bytes()[1] == b':'
+        && candidate.as_bytes()[0].is_ascii_alphabetic();
 
-    // Strip the Windows drive prefix (if any) so the remaining segments can be
-    // compared against the root segment by segment, on any host.
-    let body = if candidate.len() >= 2 && candidate.as_bytes()[1] == b':' {
-        &candidate[2..]
-    } else {
-        candidate
-    };
-    let segments: Vec<&str> = if looks_windows_shaped {
-        body.split(['\\', '/']).filter(|s| !s.is_empty()).collect()
-    } else {
-        raw.components()
-            .filter_map(|c| match c {
-                Component::Normal(n) => Some(n.to_str().unwrap_or("")),
-                _ => None,
-            })
-            .collect()
-    };
-
-    // The root's own trailing segments, used for the containment test when the
-    // candidate is absolute. The root string goes through the same
-    // Windows-shaped splitting as the candidate, so comparisons are like for
-    // like on any host. On Unix a Windows-style root is read as one long file
-    // name, so it is split explicitly instead of via `Path::components`.
-    let root_text = root.to_string_lossy().to_string();
-    let root_has_drive = root_text.len() >= 2
-        && root_text.as_bytes()[1] == b':'
-        && root_text.as_bytes()[0].is_ascii_alphabetic();
-    let root_body = if root_has_drive {
-        &root_text[2..]
-    } else {
-        root_text.as_str()
-    };
-    let root_segments: Vec<String> = if root_has_drive || root_text.contains('\\') {
-        root_body
-            .split(['\\', '/'])
+    // Textual split into path segments, treating both separators as separators
+    // everywhere. `..` and `.` survive as segments (they mean something).
+    let to_segments = |text: &str| -> Vec<String> {
+        let has_drive = text.len() >= 2
+            && text.as_bytes()[1] == b':'
+            && text.as_bytes()[0].is_ascii_alphabetic();
+        let body: &str = if has_drive { &text[2..] } else { text };
+        body.split(['\\', '/'])
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .collect()
-    } else {
-        root.components()
-            .filter_map(|c| match c {
-                Component::Normal(n) => Some(n.to_string_lossy().to_string()),
-                _ => None,
-            })
-            .collect()
     };
-    // The root reduced to its comparable head (its last two segments, or all of
-    // them when it is shorter): used to tell "the candidate is under the root"
-    // apart from "the candidate merely overlaps it".
-    let root_head: &[String] = if root_segments.len() >= 2 {
-        &root_segments[root_segments.len() - 2..]
-    } else {
-        &root_segments[..]
-    };
-    // Is the root itself an absolute location on this host? (On Unix, a
-    // Windows-style root is not — the choice below then falls back to treating
-    // a same-shaped absolute candidate as relative to that root.)
-    let root_native_absolute = Path::new(&root_text).is_absolute();
 
-    let mut out_segments: Vec<String>;
-    if root_native_absolute && windows_absolute {
-        // Absolute candidates must live under the root: seed the stack with the
-        // root's own segments, then walk the candidate's relative tail.
-        let candidate_head: Vec<String> = segments
-            .iter()
-            .take(root_segments.len())
-            .map(|s| s.to_string())
-            .collect();
-        let head_matches = candidate_head.len() == root_segments.len()
-            && candidate_head
-                .iter()
-                .zip(root_segments.iter())
-                .all(|(a, b)| a.eq_ignore_ascii_case(b));
-        if !head_matches {
-            return Err(ExecReject::PathEscape(candidate.to_string()));
+    let root_text = root.to_string_lossy().to_string();
+    // The root reduced to a clean stack: no `.`, no `..`, no empties.
+    let mut root_stack: Vec<String> = Vec::new();
+    for seg in to_segments(&root_text) {
+        apply_segment(&mut root_stack, &seg);
+    }
+    // The root's key: its segments plus, when the root is drive-prefixed, the
+    // drive itself. The drive is folded in because it is part of the identity
+    // of the location — `D:\Vara\a` must not match a root on `C:`.
+    let root_drive = if is_drive_prefixed_text(&root_text) {
+        Some(root_text[..2].to_ascii_lowercase())
+    } else {
+        None
+    };
+    let root_key: Vec<String> = match &root_drive {
+        Some(d) => {
+            let mut v = vec![d.clone()];
+            v.extend(root_stack.iter().cloned());
+            v
         }
-        out_segments = root_segments.clone();
-        for seg in segments.iter().skip(root_segments.len()) {
-            apply_segment(&mut out_segments, seg);
-            if out_segments.len() < root_segments.len() {
-                return Err(ExecReject::PathEscape(candidate.to_string()));
-            }
-        }
-    } else if raw.is_absolute() {
-        // Absolute on this host (a Unix `/etc/passwd`): it may only pass if it
-        // really lives under the root. A name match is not enough.
-        let candidate_segments: Vec<String> = segments.iter().map(|s| s.to_string()).collect();
-        let mut prefix: Option<usize> = None;
-        if root_segments.len() >= 2 {
-            for start in 0..root_segments.len().saturating_sub(1) {
-                if candidate_segments.len() < start + root_head.len() {
-                    continue;
-                }
-                let matches = root_head
-                    .iter()
-                    .zip(candidate_segments[start..].iter())
-                    .all(|(a, b)| a.eq_ignore_ascii_case(b));
-                if matches && (prefix.is_none() || start < prefix.unwrap()) {
-                    prefix = Some(start);
-                }
-            }
-        }
-        let Some(start) = prefix else {
-            return Err(ExecReject::PathEscape(candidate.to_string()));
+        None => root_stack.clone(),
+    };
+
+    // Where does the candidate start from?
+    let candidate_segments = to_segments(candidate);
+    let candidate_is_absolute =
+        candidate.starts_with('/') || candidate.starts_with('\\') || is_drive_prefixed;
+
+    // Walk the candidate from the root's stack (when it means "inside the root")
+    // or from the candidate's own base (when it names an absolute location), and
+    // refuse the moment the walk would climb above the root.
+    let mut walk: Vec<String> = root_stack.clone();
+    let mut base_len = root_stack.len();
+
+    if candidate_is_absolute {
+        // Compare the candidate's head against the root's key, segment by
+        // segment, case-insensitively — on any host.
+        let candidate_key: Vec<String> = if is_drive_prefixed {
+            let mut v = vec![candidate[..2].to_ascii_lowercase()];
+            v.extend(candidate_segments.iter().cloned());
+            v
+        } else {
+            candidate_segments.clone()
         };
-        out_segments = root_segments.clone();
-        for seg in candidate_segments.iter().skip(start + root_head.len()) {
-            apply_segment(&mut out_segments, seg);
-            if out_segments.len() < root_segments.len() {
-                return Err(ExecReject::PathEscape(candidate.to_string()));
-            }
-        }
-    } else if windows_absolute {
-        // A Windows-shaped absolute path whose head matched the normalized root
-        // (the case where the root is not a native absolute path on this host):
-        // the containment proof is the head comparison itself.
-        if segments.len() < root_head.len() {
+        if candidate_key.len() < root_key.len()
+            || !root_key
+                .iter()
+                .zip(candidate_key.iter())
+                .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        {
             return Err(ExecReject::PathEscape(candidate.to_string()));
         }
-        out_segments = root_segments.clone();
-        for seg in segments.iter().skip(root_segments.len()) {
-            apply_segment(&mut out_segments, seg);
-            if out_segments.len() < root_segments.len() {
+        // Seed the walk with the root, then consume the candidate's tail.
+        walk = root_stack.clone();
+        base_len = root_stack.len();
+        for seg in candidate_segments.iter().skip(tail_start(
+            &candidate_segments,
+            &root_key,
+            candidate_is_absolute,
+            is_drive_prefixed,
+        )) {
+            apply_segment(&mut walk, seg);
+            if walk.len() < base_len {
                 return Err(ExecReject::PathEscape(candidate.to_string()));
             }
         }
     } else {
-        out_segments = root_segments.clone();
-        for seg in segments.iter() {
-            apply_segment(&mut out_segments, seg);
-            if out_segments.len() < root_segments.len() {
+        for seg in candidate_segments.iter() {
+            apply_segment(&mut walk, seg);
+            if walk.len() < base_len {
                 return Err(ExecReject::PathEscape(candidate.to_string()));
             }
         }
     }
 
-    // Final containment check. Lexical `..` walking can no longer leave the
-    // root, so this is a belt-and-braces assertion — but it must compare by
-    // *segments*, because on Linux `Path::new(r"C:\Users\me\Vara")` is a single
-    // file name and would never match a rebuilt path component-wise.
-    let root_final: Vec<String> = root_segments.iter().map(|s| s.to_lowercase()).collect();
-    let out_final: Vec<String> = out_segments.iter().map(|s| s.to_lowercase()).collect();
-    let contained = out_final.len() >= root_final.len()
-        && root_final.iter().zip(out_final.iter()).all(|(a, b)| a == b);
-    if !contained || !is_within(&root_norm_of(root), &root_norm_of(root)) {
+    // Final containment check, by segments (never by `Path`, whose answer to
+    // "is this the same path" is platform-dependent for Windows-looking text).
+    let contained = walk.len() >= root_stack.len()
+        && root_stack
+            .iter()
+            .zip(walk.iter())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b));
+    if !contained {
         return Err(ExecReject::PathEscape(candidate.to_string()));
     }
 
     // Rebuild the path in native form so callers get something usable for
     // filesystem access on this host.
-    let mut normalized = if root.is_absolute() {
-        root.components()
-            .take(1)
-            .map(|c| c.as_os_str().to_os_string())
-            .collect::<PathBuf>()
+    let mut normalized = if root_text.starts_with('/') {
+        PathBuf::from("/")
+    } else if root_native_absolute_prefix(&root_text) {
+        PathBuf::from(&root_text[..3])
     } else {
         PathBuf::new()
     };
-    for seg in &out_segments {
+    for seg in &walk {
         normalized.push(seg);
     }
     Ok(normalized)
+}
+
+/// Index (within `candidate`) at which the part *below the root* begins.
+fn tail_start(
+    candidate_segments: &[String],
+    root_key: &[String],
+    candidate_is_absolute: bool,
+    is_drive_prefixed: bool,
+) -> usize {
+    if !candidate_is_absolute {
+        return 0;
+    }
+    // The drive letter is carried in `root_key` but not in `candidate_segments`.
+    let key_without_drive = if is_drive_prefixed {
+        root_key.len().saturating_sub(1)
+    } else {
+        root_key.len()
+    };
+    key_without_drive.min(candidate_segments.len())
+}
+
+fn is_drive_prefixed_text(text: &str) -> bool {
+    text.len() >= 2 && text.as_bytes()[1] == b':' && text.as_bytes()[0].is_ascii_alphabetic()
+}
+
+fn root_native_absolute_prefix(text: &str) -> bool {
+    text.len() >= 3
+        && text.as_bytes()[1] == b':'
+        && matches!(text.as_bytes()[2], b'\\' | b'/')
+        && text.as_bytes()[0].is_ascii_alphabetic()
 }
 
 /// Apply one path segment to a stack: `.` is dropped, `..` pops.
@@ -546,25 +520,6 @@ fn apply_segment(stack: &mut Vec<String>, segment: &str) {
         }
         other => stack.push(other.to_string()),
     }
-}
-
-/// Normalize a root path to a comparable `PathBuf` (`.`, `..` resolved).
-fn root_norm_of(root: &Path) -> PathBuf {
-    let mut s: Vec<std::ffi::OsString> = Vec::new();
-    for component in root.components() {
-        match component {
-            Component::Prefix(p) => s.push(p.as_os_str().to_os_string()),
-            Component::RootDir => s.push(std::ffi::OsString::from(
-                std::path::MAIN_SEPARATOR.to_string(),
-            )),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                s.pop();
-            }
-            Component::Normal(n) => s.push(n.to_os_string()),
-        }
-    }
-    s.iter().collect()
 }
 
 /// True when `path` is `root` itself or lives underneath it (case-insensitive
