@@ -3,6 +3,10 @@
 export type Lang = "ar" | "en";
 
 const ar = {
+  app_name: "فارَا",
+  win_minimize: "تصغير",
+  win_maximize: "تكبير",
+  win_close: "إغلاق",
   app_tagline: "ليس مجرد مساعد. منظمة حية مستقلة.",
   app_motto: "أهدافك. صنعتنا.",
   nav_chat: "المحادثة",
@@ -170,6 +174,10 @@ const ar = {
 };
 
 const en: Record<keyof typeof ar, string> = {
+  app_name: "Vara",
+  win_minimize: "Minimise",
+  win_maximize: "Maximise",
+  win_close: "Close",
   app_tagline: "Not just an assistant. A living autonomous organization.",
   app_motto: "Your goals. Our creation.",
   nav_chat: "Chat",

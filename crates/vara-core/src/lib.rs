@@ -13,7 +13,10 @@ pub mod exec_policy;
 pub mod heartbeat;
 pub mod llm;
 pub mod provenance;
+pub mod tool_loop;
 pub mod tools;
+pub mod tools_local;
+pub mod tools_registry;
 pub mod types;
 
 pub use chat::{build_context, extract_mission_proposal, extract_sys_actions, persona_flavor};
