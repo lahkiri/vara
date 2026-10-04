@@ -6,8 +6,104 @@ use crate::types::{PageContent, SearchHit};
 use crate::{Result, VaraError};
 use percent_encoding::percent_decode_str;
 use regex::Regex;
+use std::net::IpAddr;
 use std::sync::OnceLock;
 use std::time::Duration;
+
+/// Why a URL is not fetchable, phrased for a model that must adapt.
+///
+/// `fetch_page` is a *tool*: its caller may be a model reading attacker-supplied
+/// text. A fetch that can reach the machine's own network is a request-forgery
+/// primitive — `http://169.254.169.254/` on a cloud VM returns credentials,
+/// `http://localhost:1420/` reaches a local dev server, and
+/// `http://192.168.1.1/` reaches the owner's router. None of those are "the web".
+///
+/// Two guards, because one is not enough:
+///   1. the host is resolved and every candidate address is checked, and
+///   2. redirects are not followed automatically, so a public URL cannot hand us
+///      an internal `Location:` — each hop is re-checked through `fetch_page`.
+pub fn check_public_url(url: &str) -> std::result::Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|e| format!("not a valid url: {e}"))?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!("only http and https can be fetched, not {scheme}"));
+    }
+    let Some(host) = parsed.host_str() else {
+        return Err("the url has no host".to_string());
+    };
+    let host = host.trim_matches(['[', ']']).to_string();
+
+    // A literal address can be judged directly; a name must be resolved, because
+    // `localhost`/`*.internal` are not the only ways to reach a private machine.
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return if is_internal_ip(ip) {
+            Err(format!("{host} is a private or loopback address"))
+        } else {
+            Ok(())
+        };
+    }
+
+    let lowered = host.to_lowercase();
+    for forbidden in [".localhost", ".local", ".internal", ".home.arpa"] {
+        if lowered == forbidden.trim_start_matches('.') || lowered.ends_with(forbidden) {
+            return Err(format!("{host} is a local name, not a public host"));
+        }
+    }
+
+    // Resolve and judge every answer. A name that resolves to a private address
+    // (DNS rebinding, an internal-only name, a hosts-file entry) is refused the
+    // same way a literal one is.
+    match std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), 0u16)) {
+        Ok(addrs) => {
+            for addr in addrs {
+                if is_internal_ip(addr.ip()) {
+                    return Err(format!(
+                        "{host} resolves to {}, which is a private address",
+                        addr.ip()
+                    ));
+                }
+            }
+            Ok(())
+        }
+        // Unresolvable is not a security failure — let the request fail with its
+        // own, more useful error.
+        Err(_) => Ok(()),
+    }
+}
+
+/// True for addresses that cannot be part of the public web.
+pub fn is_internal_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()          // 169.254.0.0/16 — cloud metadata
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                // 100.64/10 carrier-grade NAT, 192.0.0.0/24 IETF, 198.18/15 benchmark
+                || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]))
+                || (v4.octets()[0] == 192 && v4.octets()[1] == 0 && v4.octets()[2] == 0)
+                || (v4.octets()[0] == 198 && (18..20).contains(&v4.octets()[1]))
+                // 240/4 reserved
+                || v4.octets()[0] >= 240
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                // unique-local fc00::/7 and link-local fe80::/10
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                // IPv4-mapped addresses are judged as their v4 form
+                || v6
+                    .to_ipv4_mapped()
+                    .map(|v4| is_internal_ip(IpAddr::V4(v4)))
+                    .unwrap_or(false)
+        }
+    }
+}
 
 pub struct HttpClient {
     http: reqwest::Client,
@@ -22,6 +118,10 @@ impl HttpClient {
             .user_agent(UA)
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(30))
+            // Redirects are followed by hand, one hop at a time, so every hop
+            // passes `check_public_url`. Automatic following would let a public
+            // URL hand us an internal `Location:` and bypass the guard entirely.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| VaraError::Http(e.to_string()))?;
         Ok(Self { http })
@@ -91,6 +191,10 @@ impl HttpClient {
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(VaraError::Http(format!("fetch: not an http url: {url}")));
         }
+        // The machine's own network is not "the web": see `check_public_url`.
+        // Refused here with a reason the caller can act on, rather than by a
+        // timeout that looks like the site being down.
+        check_public_url(url).map_err(|why| VaraError::Http(format!("fetch refused: {why}")))?;
         let resp = self
             .http
             .get(url)
@@ -334,5 +438,97 @@ pub fn truncate(s: &str, n: usize) -> String {
     } else {
         let t: String = s.chars().take(n).collect();
         format!("{t}…")
+    }
+}
+
+#[cfg(test)]
+mod ssrf_tests {
+    use super::*;
+
+    /// Defect I from the audit, frozen: `fetch_page` filtered on the `http`
+    /// prefix and nothing else, so a model coaxed by page text could fetch
+    /// `http://169.254.169.254/` (cloud metadata), `http://localhost:1420/`
+    /// (a local dev server) or the owner's router.
+    ///
+    /// These are refused before any socket is opened, and the reason names the
+    /// address rather than looking like a network failure.
+    #[test]
+    fn internal_addresses_are_refused_before_any_request() {
+        let refused = [
+            "http://127.0.0.1:1420/",
+            "http://127.1.2.3/",
+            "http://localhost/",
+            "http://localhost:8080/admin",
+            "http://LOCALHOST/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.0.0.1/",
+            "http://192.168.1.1/",
+            "http://172.16.5.5/",
+            "http://100.64.0.1/",
+            "http://0.0.0.0/",
+            "http://[::1]/",
+            "http://[fe80::1]/",
+            "http://[fd00::1]/",
+            "http://metadata.google.internal/computeMetadata/v1/",
+            "http://printer.local/",
+            "http://thing.home.arpa/",
+            "ftp://example.com/",
+            "file:///C:/Windows/win.ini",
+        ];
+        for url in refused {
+            let verdict = check_public_url(url);
+            assert!(
+                verdict.is_err(),
+                "this must be refused, got {verdict:?} for {url}"
+            );
+        }
+    }
+
+    /// …and it must not break the actual job: public hosts still pass.
+    #[test]
+    fn public_urls_are_still_allowed() {
+        for url in [
+            "https://example.com/",
+            "https://docs.rs/url/latest/url/",
+            "http://example.org/page?a=1",
+            // A literal public address must not be caught by the private-range
+            // checks by accident.
+            "https://1.1.1.1/",
+            "https://93.184.216.34/",
+        ] {
+            let verdict = check_public_url(url);
+            assert!(verdict.is_ok(), "{url} must stay fetchable: {verdict:?}");
+        }
+    }
+
+    /// The classification itself, so a missed range is a test failure and not a
+    /// silent hole.
+    #[test]
+    fn the_private_and_special_ranges_are_classified() {
+        let internal = [
+            "127.0.0.1",
+            "10.1.1.1",
+            "172.31.255.255",
+            "192.168.0.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "192.0.0.1",
+            "198.18.0.1",
+            "240.0.0.1",
+            "0.0.0.0",
+            "::1",
+            "fe80::1",
+            "fc00::1",
+            "fd12:3456::1",
+            "::ffff:127.0.0.1",
+        ];
+        for ip in internal {
+            let parsed: IpAddr = ip.parse().expect("a literal address");
+            assert!(is_internal_ip(parsed), "{ip} must be classified internal");
+        }
+        for ip in ["1.1.1.1", "93.184.216.34", "2606:4700:4700::1111"] {
+            let parsed: IpAddr = ip.parse().expect("a literal address");
+            assert!(!is_internal_ip(parsed), "{ip} must stay public");
+        }
     }
 }
