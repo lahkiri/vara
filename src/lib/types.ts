@@ -70,6 +70,37 @@ export interface ReportRecord {
   backed_ratio: number | null;
   verdict: string | null;
   repaired: boolean;
+  /**
+   * The gate receipt: C1/C2/C3, the real denominators, the Wilson interval and
+   * — crucially — `not_evaluable_reason`. The backend has always stored and
+   * returned this; no surface rendered it, so a PASS could be shown without the
+   * numbers that qualify it. Shape mirrors `provenance::GateReceipt`.
+   */
+  receipt_json: {
+    receipt?: GateReceipt | null;
+  } | null;
+}
+
+/** The subset of the receipt the UI shows. Everything optional: an older
+ * stored receipt must still render rather than crash the panel. */
+export interface GateReceipt {
+  gate_version?: string;
+  verdict?: string;
+  backed_ratio?: number;
+  backed_ratio_ci95?: [number, number] | null;
+  claim_support_rate?: number | null;
+  claim_support_ci95?: [number, number] | null;
+  n_claims?: number;
+  n_claims_evaluable?: number;
+  n_quotes_checked?: number;
+  n_quotes_missing?: number;
+  c1?: boolean;
+  c2?: boolean;
+  c3?: boolean | null;
+  not_evaluable_reason?: string | null;
+  missing_quotes?: string[];
+  /** URLs the report cited that were only seen in a search result. */
+  cited_never_fetched?: string[];
 }
 
 export interface EventRecord {

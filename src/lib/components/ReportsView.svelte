@@ -45,6 +45,11 @@
     return r.check_json ?? null;
   }
 
+  /** The stored gate receipt, when the backend returned one. */
+  function receipt(r: ReportRecord) {
+    return r.receipt_json?.receipt ?? null;
+  }
+
   const isRepaired = $derived(selected?.repaired ?? false);
   const repairedSibling = $derived(
     selected && reports.find((r) => r.mission_id === selected!.mission_id && r.repaired && r.id !== selected!.id)
@@ -132,6 +137,59 @@
             {/if}
             {#if c.cited_not_retrieved.length === 0 && c.unresolved_refs.length === 0}
               <div class="text-[var(--ok)]">✓ C1 · ✓ C2</div>
+            {/if}
+
+            <!--
+              The receipt. The backend has always stored and returned it, and no
+              surface rendered it — so a PASS could be shown without C3, without
+              the real denominator and without the reason nothing was evaluable.
+              That is the difference between "grounded" and "unknown", and it is
+              exactly what the product promised never to hide.
+            -->
+            {#if receipt(selected)}
+              {@const g = receipt(selected)!}
+              <div class="mt-1 pt-2 border-t border-[var(--line)] grid gap-1">
+                <div class="text-[var(--muted)] font-bold">Gate receipt {g.gate_version ?? ""}</div>
+                <div>
+                  C1 {g.c1 ? "✓" : "✗"} · C2 {g.c2 ? "✓" : "✗"} ·
+                  {#if g.c3 === true}
+                    <span class="text-[var(--ok)]">C3 ✓ ({g.n_quotes_checked ?? 0} {t("receipt_quotes_checked")})</span>
+                  {:else if g.c3 === false}
+                    <span class="text-[var(--bad)]">C3 ✗ ({g.n_quotes_missing ?? 0} {t("receipt_quotes_missing")})</span>
+                  {:else}
+                    <span class="text-[var(--warn)]">C3 {t("receipt_not_evaluable")}</span>
+                  {/if}
+                </div>
+                {#if g.backed_ratio_ci95}
+                  <div class="text-[var(--muted)]">
+                    {t("receipt_ci")}: {(g.backed_ratio_ci95[0] * 100).toFixed(0)}%–{(g.backed_ratio_ci95[1] * 100).toFixed(0)}%
+                    · {t("receipt_claims")}: {g.n_claims_evaluable ?? 0}/{g.n_claims ?? 0}
+                  </div>
+                {/if}
+                {#if g.not_evaluable_reason}
+                  <div class="text-[var(--warn)]">{t("receipt_reason")}: {g.not_evaluable_reason}</div>
+                {/if}
+                {#if (g.cited_never_fetched ?? []).length > 0}
+                  <div class="text-[var(--bad)]">
+                    {t("receipt_never_fetched")}:
+                    <ul class="list-disc ms-5">
+                      {#each (g.cited_never_fetched ?? []).slice(0, 8) as u}
+                        <li class="truncate">{u}</li>
+                      {/each}
+                    </ul>
+                  </div>
+                {/if}
+                {#if (g.missing_quotes ?? []).length > 0}
+                  <div>
+                    <div class="font-bold text-[var(--bad)]">{t("receipt_missing_quotes")}:</div>
+                    <ul class="list-disc ms-5 text-[var(--muted)]">
+                      {#each (g.missing_quotes ?? []).slice(0, 8) as q}
+                        <li class="truncate">“{q}”</li>
+                      {/each}
+                    </ul>
+                  </div>
+                {/if}
+              </div>
             {/if}
           </div>
         </details>

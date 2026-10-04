@@ -88,6 +88,28 @@ const reports: ReportRecord[] = [
       { url: "https://github.com/ggml-org/llama.cpp", title: "llama.cpp", fetched: true },
       { url: "https://docs.vllm.ai/en/latest/", title: "vLLM Docs", fetched: true },
     ],
+    // The demo data carries a receipt too, because the panel renders one: a mock
+    // without it would hide the very feature this field exists for.
+    receipt_json: {
+      receipt: {
+        gate_version: "vara-provenance/0.6",
+        verdict: "PASS",
+        backed_ratio: 1.0,
+        backed_ratio_ci95: [0.51, 1.0],
+        claim_support_rate: 0.5,
+        claim_support_ci95: [0.09, 0.91],
+        n_claims: 4,
+        n_claims_evaluable: 2,
+        n_quotes_checked: 2,
+        n_quotes_missing: 0,
+        c1: true,
+        c2: true,
+        c3: true,
+        not_evaluable_reason: null,
+        missing_quotes: [],
+        cited_never_fetched: [],
+      },
+    },
     check_json: {
       verdict: "pass",
       rule: "structural-provenance-v2",
