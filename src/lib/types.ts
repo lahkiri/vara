@@ -170,3 +170,33 @@ export interface UpdateInfo {
   current_version: string;
   notes: string;
 }
+
+/** One plugin as the UI renders it. Mirrors `plugin_bridge::PluginView`. */
+export interface PluginView {
+  id: string;
+  name: string;
+  version: string;
+  summary: string;
+  /** Slot names: tool, toolset, brain, memory, interface, theme, persona,
+   *  channel, goal_engine, subagent, mcp, skill */
+  slots: string[];
+  shipped: boolean;
+  enabled: boolean;
+  approved: boolean;
+  /** "verified" | "unverified" | "BROKEN" */
+  integrity: string;
+  /** What it asks for, in the owner's words. */
+  asks: string[];
+  path: string;
+}
+
+export interface PluginReport {
+  plugins: PluginView[];
+  errors: string[];
+  /** The plugins that would load next start, in dependency order. */
+  plan: string[];
+  plan_error: string | null;
+  user_dir: string;
+  enabled_count: number;
+  installed_count: number;
+}

@@ -25,7 +25,9 @@ export const app = $state<{
   lastReportId: number | null;
 }>({
   ready: false,
-  view: "chat",
+  view: (typeof window !== "undefined" && window.location.hash
+    ? window.location.hash.slice(1)
+    : "chat") as string,
   busy: false,
   paused: false,
   stats: { missions_total: 0, missions_completed: 0, notes_total: 0, reports_total: 0, avg_backed_ratio: null },
@@ -422,4 +424,21 @@ export async function initEvents(): Promise<void> {
 export function pushFeed(ev: EntityEvent) {
   app.feed.unshift(ev);
   if (app.feed.length > 250) app.feed.pop();
+}
+
+// The current view is addressable (`#plugins`, `#settings`, …): the same URL a
+// person can share, a screenshot script can aim at, and a test can navigate to.
+if (typeof window !== "undefined") {
+  window.addEventListener("hashchange", () => {
+    const next = window.location.hash.slice(1);
+    if (next) app.view = next;
+  });
+  $effect.root(() => {
+    $effect(() => {
+      const wanted = `#${app.view}`;
+      if (window.location.hash !== wanted) {
+        history.replaceState(null, "", wanted);
+      }
+    });
+  });
 }

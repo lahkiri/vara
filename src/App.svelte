@@ -7,6 +7,7 @@
   import ReportsView from "./lib/components/ReportsView.svelte";
   import ActivityView from "./lib/components/ActivityView.svelte";
   import SettingsView from "./lib/components/SettingsView.svelte";
+import PluginsView from "./lib/components/PluginsView.svelte";
   import TitleBar from "./lib/components/TitleBar.svelte";
   import orb from "./assets/characters/orb.png";
 
@@ -38,6 +39,8 @@
                 <ReportsView />
               {:else if app.view === "activity"}
                 <ActivityView />
+              {:else if app.view === "plugins"}
+                <PluginsView />
               {:else if app.view === "settings"}
                 <SettingsView />
               {/if}

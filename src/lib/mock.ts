@@ -13,6 +13,7 @@ import type {
   ChatMessageRecord,
   SendChatStart,
   ActionProposal,
+  PluginReport,
   SkillDoc,
   SysExecuteResult,
 } from "./types";
@@ -429,6 +430,32 @@ export const mockApi: Api = {
   sysApprove: async (_proposalId: number, _approve: boolean): Promise<void> => {},
   proposals: async (_conversationId: number, _limit = 50): Promise<ActionProposal[]> => [],
   skills: async (): Promise<SkillDoc[]> => [],
+
+  // Plugins, with the demo data a browser developer needs to see every state the
+  // real list can produce: verified and unverified, enabled and disabled,
+  // approved and waiting for approval, and one broken manifest.
+  listPlugins: async (): Promise<PluginReport> => mockPluginReport(),
+  setPluginEnabled: async (id: string, enabled: boolean): Promise<PluginReport> => {
+    const report = mockPluginReport();
+    const row = report.plugins.find((p) => p.id === id);
+    if (row) {
+      if (enabled && row.asks.length > 0 && !row.approved) {
+        throw new Error(`'${id}' asks to ${row.asks.join(", ")} — approve it first`);
+      }
+      row.enabled = enabled;
+      report.enabled_count = report.plugins.filter((p) => p.enabled).length;
+      report.plan = report.plugins.filter((p) => p.enabled).map((p) => p.id);
+    }
+    return report;
+  },
+  approvePlugin: async (id: string): Promise<PluginReport> => {
+    const report = mockPluginReport();
+    const row = report.plugins.find((p) => p.id === id);
+    if (row) row.approved = true;
+    return report;
+  },
+  revealPlugin: async (): Promise<void> => {},
+  openUserPluginDir: async (): Promise<string> => "C:\\Users\\demo\\AppData\\Local\\app.vara.entity\\plugins",
   sysExecute: async (proposalId: number): Promise<SysExecuteResult> => {
     const conversationId = 1;
     const rec = pushMsg(conversationId, {
@@ -453,3 +480,95 @@ export const mockApi: Api = {
   checkForUpdate: async () => null,
   installUpdate: async () => {},
 };
+
+/** Demo plugin list covering every state the real one can show. */
+function mockPluginReport(): PluginReport {
+  return {
+    installed_count: 6,
+    enabled_count: 3,
+    user_dir: "C:\\Users\\demo\\AppData\\Local\\app.vara.entity\\plugins",
+    plan: ["vara.brains", "vara.tools.read", "vara.themes"],
+    plan_error: null,
+    errors: ["plugins/half-written/plugin.toml is not a valid manifest: missing field `slots`"],
+    plugins: [
+      {
+        id: "vara.tools.read",
+        name: "Read tools",
+        version: "1.0.0",
+        summary: "Six read-only tools: system info, list, find, read, disk, memory search",
+        slots: ["tool", "toolset"],
+        shipped: true,
+        enabled: true,
+        approved: true,
+        integrity: "verified",
+        asks: [],
+        path: "plugins/tools-read",
+      },
+      {
+        id: "vara.tools.write",
+        name: "Write tools",
+        version: "1.0.0",
+        summary: "Create, move and trash files — every write needs an undo journal entry",
+        slots: ["tool", "toolset"],
+        shipped: true,
+        enabled: false,
+        approved: false,
+        integrity: "verified",
+        asks: ["write files"],
+        path: "plugins/tools-write",
+      },
+      {
+        id: "vara.channels",
+        name: "Channels",
+        version: "1.0.0",
+        summary: "Talk through Discord, Slack or mail — every outbound message needs approval",
+        slots: ["channel"],
+        shipped: true,
+        enabled: false,
+        approved: false,
+        integrity: "unverified",
+        asks: ["use the network", "contact you"],
+        path: "plugins/channels",
+      },
+      {
+        id: "vara.tools.read.tampered",
+        name: "Read tools (edited)",
+        version: "1.0.0",
+        summary: "A manifest whose claims no longer match its hash",
+        slots: ["tool"],
+        shipped: false,
+        enabled: false,
+        approved: false,
+        integrity: "BROKEN",
+        asks: [],
+        path: "plugins/tampered",
+      },
+      {
+        id: "vara.brains",
+        name: "Model adapters",
+        version: "1.0.0",
+        summary: "OpenAI-compatible endpoints, plus a local-first option",
+        slots: ["brain"],
+        shipped: true,
+        enabled: true,
+        approved: true,
+        integrity: "verified",
+        asks: [],
+        path: "plugins/brains",
+      },
+      {
+        id: "vara.themes",
+        name: "Themes",
+        version: "1.0.0",
+        summary: "Visual tokens the owner can swap without touching code",
+        slots: ["theme"],
+        shipped: true,
+        enabled: true,
+        approved: true,
+        integrity: "verified",
+        asks: [],
+        path: "plugins/themes",
+      },
+    ],
+  };
+}

@@ -15,6 +15,7 @@ import type {
   SysAction,
   ActionProposal,
   SkillDoc,
+  PluginReport,
   SysExecuteResult,
   UpdateInfo,
 } from "./types";
@@ -33,6 +34,7 @@ export type {
   SysAction,
   ActionProposal,
   SkillDoc,
+  PluginReport,
   SysExecuteResult,
   UpdateInfo,
 };
@@ -137,6 +139,16 @@ const realApi = {
 
   // The entity's own rules, shipped with the app (read-only).
   skills: () => invoke<SkillDoc[]>("list_skills"),
+
+  // Plugins: every capability, inspectable and changeable from the app. The
+  // refusal reasons (unapproved permissions, broken integrity) come from the
+  // core, so the UI shows the same words the CLI prints.
+  listPlugins: () => invoke<PluginReport>("list_plugins"),
+  setPluginEnabled: (id: string, enabled: boolean) =>
+    invoke<PluginReport>("set_plugin_enabled", { id, enabled }),
+  approvePlugin: (id: string) => invoke<PluginReport>("approve_plugin", { id }),
+  revealPlugin: (id: string) => invoke<void>("reveal_plugin", { id }),
+  openUserPluginDir: () => invoke<string>("open_user_plugin_dir"),
 
   // updates
   checkForUpdate: () => invoke<UpdateInfo | null>("check_for_update"),
