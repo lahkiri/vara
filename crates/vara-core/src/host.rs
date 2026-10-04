@@ -94,6 +94,54 @@ pub struct Event {
     pub payload: String,
 }
 
+/// A capability a plugin can offer the rest of the product.
+///
+/// This is the "service seam": a plugin registers a **named service** and
+/// others look it up by name through the host, never through an import. That is
+/// how swapping one provider changes the whole product (dsh's `ctx.tools`,
+/// `ctx.llm`, `ctx.fs` are the same idea), and it is why the host must not know
+/// what a tool or a model is.
+///
+/// The payoff for Vara specifically: the six read tools, the model adapter and
+/// the storage layer become *providers behind a name*, so a TUI, a headless
+/// daemon or a web surface can be composed from the same host with a different
+/// set of plugins — the owner's requirement that the interface be a replaceable
+/// layer rather than the product.
+#[derive(Clone)]
+pub struct Service {
+    pub name: String,
+    /// Which plugin provides it — used to unwind on unload and to attribute
+    /// failures honestly.
+    pub owner: PluginId,
+    /// The value. Held as `Arc<dyn Any + Send + Sync>` so any plugin can read
+    /// it back, downcasting to the type the seam's contract fixes.
+    pub value: Arc<dyn std::any::Any + Send + Sync>,
+}
+
+impl std::fmt::Debug for Service {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Service")
+            .field("name", &self.name)
+            .field("owner", &self.owner)
+            .finish()
+    }
+}
+
+impl Service {
+    pub fn new<T: Send + Sync + 'static>(name: &str, owner: &str, value: T) -> Self {
+        Self {
+            name: name.to_string(),
+            owner: owner.to_string(),
+            value: Arc::new(value),
+        }
+    }
+
+    /// Read the service back as its declared type.
+    pub fn get<T: Send + Sync + 'static>(&self) -> Option<Arc<T>> {
+        self.value.clone().downcast::<T>().ok()
+    }
+}
+
 /// Everything a plugin may do to the host while it is loaded.
 ///
 /// Registrations are collected here and unwound on unload — the reversible
@@ -121,6 +169,52 @@ impl<'a> PluginCtx<'a> {
     /// dropping it (or unloading the plugin) removes the listener.
     pub fn on(&self, name: &str, handler: impl Fn(&Event) + Send + Sync + 'static) -> Effect {
         self.host.subscribe(&self.id, name, Box::new(handler))
+    }
+
+    /// Offer a service to the rest of the product under `name`.
+    ///
+    /// Registering twice under the same name is refused: an ambiguous seam is
+    /// worse than a missing one, because it silently picks a provider.
+    pub fn register<T: Send + Sync + 'static>(
+        &self,
+        name: &str,
+        value: T,
+    ) -> Result<Effect, String> {
+        let service = Service::new(name, &self.id, value);
+        self.host
+            .services
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(name.to_string(), service);
+        self.env.log(LogEntry {
+            plugin: self.id.clone(),
+            kind: "service".into(),
+            message: format!("registered '{name}'"),
+            model_visible: false,
+        });
+        let services = self.host.services.clone();
+        let key = name.to_string();
+        let owner = self.id.clone();
+        Ok(Effect::new(move || {
+            if let Ok(mut map) = services.lock() {
+                // Only the owner may remove it: unloading plugin A must never
+                // tear down a service that plugin B re-registered.
+                if map.get(&key).map(|s| s.owner == owner).unwrap_or(false) {
+                    map.remove(&key);
+                }
+            }
+        }))
+    }
+
+    /// Look up a service somebody else registered. `None` means the seam is not
+    /// filled — callers must handle that explicitly instead of defaulting.
+    pub fn service<T: Send + Sync + 'static>(&self, name: &str) -> Option<Arc<T>> {
+        self.host.service(name)
+    }
+    /// Does a plugin with this id exist right now? Used for honest capability
+    /// checks (a plugin may declare a soft dependency).
+    pub fn has_plugin(&self, id: &str) -> bool {
+        self.host.is_loaded(id)
     }
 
     /// Ask the gate. A plugin must go through this for anything consequential.
@@ -222,6 +316,7 @@ type Listener = (PluginId, Handler);
 pub struct Host {
     plugins: Mutex<BTreeMap<PluginId, PluginRecord>>,
     listeners: Arc<Mutex<BTreeMap<String, Vec<Listener>>>>,
+    services: Arc<Mutex<BTreeMap<String, Service>>>,
     env: Mutex<Option<Arc<dyn HostEnv>>>,
 }
 
@@ -408,6 +503,26 @@ impl Host {
         for handler in handlers {
             handler(event);
         }
+    }
+
+    /// Look up a service by name. `None` means the seam is unfilled, which a
+    /// consumer must handle explicitly instead of silently defaulting.
+    pub fn service<T: Send + Sync + 'static>(&self, name: &str) -> Option<Arc<T>> {
+        self.services
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(name)
+            .and_then(|s| s.get::<T>())
+    }
+
+    /// Every registered service, with the plugin that owns it.
+    pub fn services(&self) -> Vec<(String, PluginId)> {
+        self.services
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|(name, s)| (name.clone(), s.owner.clone()))
+            .collect()
     }
 
     /// `host.list()` — what is loaded, and what is broken.
@@ -694,6 +809,110 @@ mod tests {
             ["second", "first"],
             "reverse order keeps dependent teardown correct"
         );
+    }
+
+    // ---- services: the seam that lets a provider be swapped ----
+
+    #[derive(Debug, PartialEq)]
+    struct Toolset {
+        names: Vec<String>,
+    }
+
+    struct Provider;
+    impl Plugin for Provider {
+        fn id(&self) -> &str {
+            "provider"
+        }
+        fn start(&self, ctx: &PluginCtx<'_>) -> Result<Vec<Effect>, String> {
+            ctx.register(
+                "tools",
+                Toolset {
+                    names: vec!["system_info".into(), "list_dir".into()],
+                },
+            )
+            .map(|e| vec![e])
+        }
+    }
+
+    struct Consumer {
+        seen: Arc<Mutex<Option<Vec<String>>>>,
+    }
+    impl Plugin for Consumer {
+        fn id(&self) -> &str {
+            "consumer"
+        }
+        fn start(&self, ctx: &PluginCtx<'_>) -> Result<Vec<Effect>, String> {
+            // Soft dependency: a missing seam must be handled, not defaulted.
+            let names = match ctx.service::<Toolset>("tools") {
+                Some(toolset) => toolset.names.clone(),
+                None => {
+                    ctx.log("seam", "tools seam is unfilled", false);
+                    Vec::new()
+                }
+            };
+            *self.seen.lock().unwrap() = Some(names);
+            Ok(vec![Effect::none()])
+        }
+    }
+
+    #[test]
+    fn a_provider_fills_a_seam_and_a_consumer_reads_it() {
+        let host = Arc::new(Host::new(RecordingEnv::new(true)));
+        let seen = Arc::new(Mutex::new(None));
+        host.load(Arc::new(Provider)).unwrap();
+        host.load(Arc::new(Consumer { seen: seen.clone() }))
+            .unwrap();
+        assert_eq!(
+            seen.lock().unwrap().clone().unwrap(),
+            vec!["system_info".to_string(), "list_dir".to_string()]
+        );
+        assert_eq!(host.services().len(), 1);
+        assert_eq!(host.services()[0].0, "tools");
+        assert_eq!(host.services()[0].1, "provider");
+    }
+
+    #[test]
+    fn an_unfilled_seam_is_visible_not_silent() {
+        let env = RecordingEnv::new(true);
+        let host = Arc::new(Host::new(env.clone()));
+        let seen = Arc::new(Mutex::new(None));
+        // No provider loaded: the consumer must degrade explicitly.
+        host.load(Arc::new(Consumer { seen: seen.clone() }))
+            .unwrap();
+        assert_eq!(seen.lock().unwrap().clone().unwrap(), Vec::<String>::new());
+        let logs = env.logs.lock().unwrap();
+        assert!(logs
+            .iter()
+            .any(|l| l.kind == "seam" && l.message.contains("unfilled")));
+    }
+
+    #[test]
+    fn unloading_the_provider_removes_the_service() {
+        let host = Arc::new(Host::new(RecordingEnv::new(true)));
+        host.load(Arc::new(Provider)).unwrap();
+        assert!(host.service::<Toolset>("tools").is_some());
+        host.unload("provider");
+        assert!(
+            host.service::<Toolset>("tools").is_none(),
+            "the seam must close when its provider leaves"
+        );
+        // …and a consumer loaded afterwards degrades instead of panicking.
+        let seen = Arc::new(Mutex::new(None));
+        host.load(Arc::new(Consumer { seen: seen.clone() }))
+            .unwrap();
+        assert!(seen.lock().unwrap().clone().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_consumer_keeps_working_after_the_provider_returns() {
+        let host = Arc::new(Host::new(RecordingEnv::new(true)));
+        host.load(Arc::new(Provider)).unwrap();
+        host.unload("provider");
+        host.load(Arc::new(Provider)).unwrap();
+        let seen = Arc::new(Mutex::new(None));
+        host.load(Arc::new(Consumer { seen: seen.clone() }))
+            .unwrap();
+        assert_eq!(seen.lock().unwrap().clone().unwrap().len(), 2);
     }
 
     #[test]
