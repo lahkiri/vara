@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.7.0 — Everything is a plugin (unreleased)
+## v0.7.0 — Everything is a plugin (2026-10-04)
 
 ### The composition model
 - **A plugin host with no privileged core** (`host.rs`): plugins contribute

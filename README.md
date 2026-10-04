@@ -23,12 +23,19 @@
 
 ---
 
-## What's new in v0.7.0 — Everything is a plugin
+## What's new in v0.7.0 — everything is a plugin, and one gap that is not hidden
 
-The entity is now **assembled rather than compiled-in**. Tools, models, memory,
-themes, personas, channels, subagents, MCP servers and even the interfaces are
-plugins: each is a folder with a `plugin.toml`, each declares what it asks for,
-and each can be removed without touching code.
+Tools, models, memory, themes, personas, channels, subagents, MCP servers and
+even the interfaces are **plugins**: each is a folder with a `plugin.toml`, each
+declares what it asks for, and each can be removed without touching code.
+
+**The gap, stated first because it is the important part:** the production
+mission path does not yet load its capabilities through the plugin host. The
+declaration, verification, permission and composition machinery is real and
+tested; what is missing is the runtime going through it. Until that lands, this
+release sells a *plugin system you can audit and compose with*, not a runtime
+that is fully assembled from plugins. Every row of that claim, with the command
+that proves it, is in [`docs/REALITY_MATRIX.md`](docs/REALITY_MATRIX.md).
 
 - **A host with no privileged core.** Plugins contribute services and events, and
   every registration is a reversible effect that unwinds on unload. One broken
@@ -172,7 +179,7 @@ v2 design with frozen decision thresholds.
 
 | | |
 |---|---|
-| 🧩 **Everything is a plugin** | The entity is assembled, not compiled-in: tools, models, memory, themes, personas, channels, subagents, MCP servers and the interfaces themselves are plugins you can add, swap or remove. Fifteen ship with the product, and **everything dangerous ships off** |
+| 🧩 **A real plugin system, with one honest gap** | Tools, models, memory, themes, personas, channels, subagents, MCP servers and the interfaces are **declared, hashed, verified and composable** as plugins; fifteen ship with the product and everything dangerous ships off. **What is not finished: the production mission path does not yet load its capabilities through the plugin host**, so disabling a plugin changes the composition and the panel, not what a running mission uses. That gap is stated in [`docs/REALITY_MATRIX.md`](docs/REALITY_MATRIX.md) instead of glossed over |
 | 📜 **A manifest you can audit** | Every plugin is a folder with a `plugin.toml`: twelve slots, deny-by-default permissions, and a SHA-256 over exactly what it claims. Edit the claims without updating the hash and it reports `BROKEN` and refuses to load |
 | 🙋 **Your switch, your permission** | A plugin that wants to write files or reach the network cannot be enabled until you accept what it asks for — and that acceptance is bound to the version you saw |
 | 💬 **A companion, not a form** | Chat with فارا in persistent conversations: follow-up messages, streaming replies, and answers grounded in her actual memory (FTS-matched notes) — the Dot/Muse-style continuity, on your desktop |
