@@ -7,6 +7,8 @@
   import ReportsView from "./lib/components/ReportsView.svelte";
   import ActivityView from "./lib/components/ActivityView.svelte";
   import SettingsView from "./lib/components/SettingsView.svelte";
+import PluginsView from "./lib/components/PluginsView.svelte";
+  import TitleBar from "./lib/components/TitleBar.svelte";
   import orb from "./assets/characters/orb.png";
 
   onMount(async () => {
@@ -21,26 +23,31 @@
     <div class="text-[var(--muted)] text-sm tracking-wide">Vara…</div>
   </div>
 {:else}
-  <div class="workspace-shell flex h-screen overflow-hidden">
-    <Sidebar />
-    <main class="flex-1 overflow-hidden">
-      {#if app.view === "chat"}
-        <ChatView />
-      {:else}
-        <div class="h-full overflow-y-auto">
-          <div class="max-w-6xl mx-auto px-6 py-6">
-            {#if app.view === "memory"}
-              <MemoryView />
-            {:else if app.view === "reports"}
-              <ReportsView />
-            {:else if app.view === "activity"}
-              <ActivityView />
-            {:else if app.view === "settings"}
-              <SettingsView />
-            {/if}
+  <div class="app-frame">
+    <TitleBar />
+    <div class="workspace-shell flex overflow-hidden">
+      <Sidebar />
+      <main class="flex-1 overflow-hidden">
+        {#if app.view === "chat"}
+          <ChatView />
+        {:else}
+          <div class="h-full overflow-y-auto">
+            <div class="max-w-6xl mx-auto px-6 py-6">
+              {#if app.view === "memory"}
+                <MemoryView />
+              {:else if app.view === "reports"}
+                <ReportsView />
+              {:else if app.view === "activity"}
+                <ActivityView />
+              {:else if app.view === "plugins"}
+                <PluginsView />
+              {:else if app.view === "settings"}
+                <SettingsView />
+              {/if}
+            </div>
           </div>
-        </div>
-      {/if}
-    </main>
+        {/if}
+      </main>
+    </div>
   </div>
 {/if}

@@ -10,9 +10,19 @@ pub mod db;
 pub mod dedup;
 pub mod entity;
 pub mod exec_policy;
+pub mod goals;
+pub mod heartbeat;
+pub mod host;
 pub mod llm;
+pub mod plugin;
+pub mod plugin_registry;
+pub mod profile;
 pub mod provenance;
+pub mod seams;
+pub mod tool_loop;
 pub mod tools;
+pub mod tools_local;
+pub mod tools_registry;
 pub mod types;
 
 pub use chat::{build_context, extract_mission_proposal, extract_sys_actions, persona_flavor};
@@ -20,6 +30,52 @@ pub use db::Database;
 pub use entity::{EntityEvent, EntityRuntime, EventSink, MissionInputs, MissionOutcome};
 pub use llm::LlmClient;
 pub use types::{EntityState, Settings};
+
+/// A lowercase hex SHA-256 of arbitrary bytes.
+///
+/// One implementation for the whole crate: plugin manifests, content hashes and
+/// action digests must agree byte for byte, and two copies of this would be two
+/// chances to disagree.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Load settings for a headless surface (the TUI, a daemon): the settings file
+/// when present, then the `VARA_PROVIDER_*` environment overrides.
+///
+/// This is the same precedence the desktop shell uses (`env > file`), kept in
+/// the core so every interface inherits one rule — a second implementation of
+/// "where do credentials come from" is how a key ends up in two places.
+pub fn settings_from_env(dir: &std::path::Path) -> Settings {
+    let path = dir.join("settings.json");
+    let mut settings = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|body| serde_json::from_str::<Settings>(&body).ok())
+        .unwrap_or_default();
+    if let Ok(key) = std::env::var("VARA_PROVIDER_API_KEY") {
+        if !key.trim().is_empty() {
+            settings.provider.api_key = key.trim().to_string();
+        }
+    }
+    if let Ok(base) = std::env::var("VARA_PROVIDER_BASE_URL") {
+        if !base.trim().is_empty() {
+            settings.provider.base_url = base.trim().to_string();
+        }
+    }
+    if let Ok(model) = std::env::var("VARA_PROVIDER_MODEL") {
+        if !model.trim().is_empty() {
+            settings.provider.model = model.trim().to_string();
+        }
+    }
+    settings
+}
 
 /// Canonical error type shared by core modules.
 #[derive(Debug, thiserror::Error)]

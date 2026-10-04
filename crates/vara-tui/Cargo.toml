@@ -1,0 +1,14 @@
+[package]
+name = "vara-tui"
+version = "0.7.0"
+edition = "2021"
+license = "MIT"
+description = "The terminal face of the same entity: no window, no WebView, same core"
+
+[[bin]]
+name = "vara-tui"
+path = "src/main.rs"
+
+[dependencies]
+vara-core = { path = "../vara-core" }
+tokio = { version = "1", features = ["rt", "macros", "time"] }

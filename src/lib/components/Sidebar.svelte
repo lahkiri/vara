@@ -8,7 +8,8 @@
     { id: "reports", label: () => t("nav_reports"), icon: "▤" },
     { id: "memory", label: () => t("nav_memory"), icon: "❖" },
     { id: "activity", label: () => t("nav_activity"), icon: "≡" },
-    { id: "settings", label: () => t("nav_settings"), icon: "⚙" },
+    { id: "plugins", label: () => t("nav_plugins"), icon: "◈" },
+  { id: "settings", label: () => t("nav_settings"), icon: "⚙" },
   ];
 
   let busyDot = $derived(app.busy ? "var(--accent)" : app.paused ? "var(--warn)" : "var(--ok)");

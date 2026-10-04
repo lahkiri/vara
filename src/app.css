@@ -4,6 +4,20 @@
 html,body { height:100%; background:var(--bg); color:var(--text); font-family:Inter,"Segoe UI",Tahoma,system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
 [data-persona="classic"] { --accent:#a7a6ff; --accent-soft:#2c2c49; } [data-persona="dark"] { --accent:#d0a4ff; --accent-soft:#392747; } [data-persona="stealth"] { --accent:#b7c0ce; --accent-soft:#29303a; } [data-persona="tech"] { --accent:#71d7e8; --accent-soft:#1d3940; } [data-persona="nature"] { --accent:#78d7aa; --accent-soft:#213b31; }
 * { scrollbar-color:var(--line-strong) transparent; } ::-webkit-scrollbar { width:8px; height:8px; } ::-webkit-scrollbar-thumb { background:var(--line-strong); border-radius:99px; } ::-webkit-scrollbar-track { background:transparent; }
+
+/* ---- app frame + custom titlebar (G-07) -------------------------------
+   The window has `decorations: false`, so the shell owns its chrome. The bar
+   is the drag region (the attribute is what Tauri listens for) and the three
+   controls are the only interactive elements inside it. */
+.app-frame { display:flex; flex-direction:column; height:100vh; background:var(--bg); }
+.app-frame > .workspace-shell { flex:1 1 auto; min-height:0; }
+.titlebar { height:32px; flex:0 0 32px; display:flex; align-items:center; justify-content:space-between; background:var(--bg2); border-bottom:1px solid var(--line); user-select:none; }
+.titlebar-dot { width:7px; height:7px; border-radius:999px; background:var(--accent); box-shadow:0 0 8px color-mix(in srgb,var(--accent) 60%,transparent); }
+.titlebar-title { font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
+.titlebar-controls { display:flex; height:100%; }
+.titlebar-btn { width:46px; height:100%; display:inline-flex; align-items:center; justify-content:center; background:transparent; border:0; color:var(--muted); cursor:pointer; }
+.titlebar-btn:hover { background:var(--card-hover); color:var(--text); }
+.titlebar-close:hover { background:var(--bad); color:#111216; }
 .card { background:var(--card); border:1px solid var(--line); border-radius:12px; }
 .btn,.btn-ghost,.input,button { transition:background-color .16s ease,border-color .16s ease,color .16s ease,transform .12s ease; }
 .btn { background:var(--accent); color:#111216; font-weight:750; border-radius:8px; padding:.55rem 1rem; } .btn:hover { filter:brightness(1.07); } .btn:active { transform:translateY(1px); } .btn:disabled { opacity:.45; cursor:not-allowed; }

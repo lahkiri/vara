@@ -1,0 +1,15 @@
+id = "vara.swarm.team"
+name = "Agent Swarm Team"
+version = "1.0.0"
+summary = "A lead that splits one goal across roles and collects their results"
+slots = ["subagent", "goal_engine"]
+requires = ["vara.subagents", "vara.goals"]
+shipped = true
+default_enabled = false
+
+sha256 = "d9df6a5f86e8170cb28a903b98963faae122bccce3066feabdb104c23dd3475e"
+
+[config]
+max_members = "4"
+roles = "researcher,builder,critic"
+

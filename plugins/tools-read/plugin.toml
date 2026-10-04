@@ -1,0 +1,16 @@
+id = "vara.tools.read"
+name = "Read tools"
+version = "1.0.0"
+summary = "Six read-only tools: system info, list, find, read, disk, memory search"
+slots = ["tool", "toolset"]
+requires = []
+shipped = true
+default_enabled = true
+
+sha256 = "04ec2c50ab94527e1cf22b5c6ea444ae1b585884a715f80ca50aae79639d05a6"
+
+[permissions]
+read_files = true
+read_memory = true
+file_extensions = ["txt", "md", "json", "toml", "csv", "log", "rs", "ts", "js", "svelte", "py"]
+

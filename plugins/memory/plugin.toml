@@ -1,0 +1,16 @@
+id = "vara.memory"
+name = "Memory backends"
+version = "1.0.0"
+summary = "Where notes live: SQLite, workspace files, or both"
+slots = ["memory"]
+shipped = true
+default_enabled = true
+
+sha256 = "ab3d7b8a366280bf8ffe3a0761b95d88b9dd5901f464ce1e744ac57a86519139"
+
+[permissions]
+read_memory = true
+
+[config]
+backend = "sqlite"
+

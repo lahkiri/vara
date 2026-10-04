@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/vara-core", "src-tauri"]
+members = ["crates/vara-core", "crates/vara-tui", "crates/vara-plugins", "src-tauri"]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 license = "MIT"
 authors = ["Vara contributors"]
@@ -13,3 +13,17 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+# The dev profile is tuned for this project's reality: a Tauri workspace pulls
+# ~467 crates and the stock debug build needs 10 GB+ of intermediate files,
+# which does not fit on an ordinary laptop disk and broke a real local build.
+# Line tables keep backtraces useful while cutting artifact size several times
+# over; `debug = 0` shrinks it further but makes panics unreadable, and readable
+# panics are worth the space in an agent runtime.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+# Dependencies are never debugged here: no line tables for them at all.
+debug = false

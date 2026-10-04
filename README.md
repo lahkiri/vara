@@ -23,6 +23,43 @@
 
 ---
 
+## What's new in v0.7.0 — Everything is a plugin
+
+The entity is now **assembled rather than compiled-in**. Tools, models, memory,
+themes, personas, channels, subagents, MCP servers and even the interfaces are
+plugins: each is a folder with a `plugin.toml`, each declares what it asks for,
+and each can be removed without touching code.
+
+- **A host with no privileged core.** Plugins contribute services and events, and
+  every registration is a reversible effect that unwinds on unload. One broken
+  plugin is recorded as unhealthy with its reason; it does not take the entity
+  down. The six read tools, the model adapter and the interface all arrive
+  through the same mechanism, so nothing built-in is special.
+- **A manifest you can audit.** Twelve slots, deny-by-default permissions, and a
+  SHA-256 over exactly what the plugin claims. Change the claims without
+  recomputing the hash and it is reported `BROKEN` and will not load — verified
+  by doing it.
+- **Your approval, bound to what you saw.** A plugin that wants to write files or
+  use the network cannot be enabled until you accept it, and adding a permission
+  afterwards revokes that acceptance. The refusal comes from the core, not the
+  button.
+- **Fifteen plugins ship with the product**, and everything dangerous —
+  write tools, browser use, computer use, the MCP client, channels — ships
+  **present but off**.
+- **A panel in the app** (`◈ Plugins`) groups them by slot and shows
+  `موثّقة` / `غير موثّقة` / `تالفة` beside what each one asks for.
+- **Not only a window any more.** `vara-tui` runs the same entity in a terminal —
+  one file of application code over the same core, no WebView2 — verified by
+  asking it "اشرح نظامي": it chose `system_info`, ran it on this machine, and
+  answered from what it read.
+- **`vara-plugins`** inspects and edits the composition from a shell:
+  `list`, `plan`, `check` (non-zero on a bad plan, so CI catches it), `enable`,
+  `disable`, `approve`, `hash`.
+- **Goals that know when to stop**: an outcome is a metric with a target or a
+  checklist, never an opinion. Budgets and step ceilings are hard, and a goal
+  that stops moving becomes a question to you instead of a loop.
+- **Local builds are 2.44 GB instead of 10.4 GB** (2m28s) after tuning the dev
+  profile, which is what makes building on an ordinary laptop possible.
 ## What's new in v0.6.0 — Approvals you can audit, provenance you can measure
 
 - **The approval card is now a real gate, not a decoration.** A proposed action
@@ -135,17 +172,50 @@ v2 design with frozen decision thresholds.
 
 | | |
 |---|---|
-| 💬 **A companion, not a form** | Chat with Vara in persistent conversations: follow-up messages, streaming replies, and answers grounded in her actual memory (FTS-matched notes) — the Dot/Muse-style continuity, on your desktop |
-| ✦ **From talk to action** | When a request needs real research, Vara proposes a mission from inside the chat — one click turns it into a fully-gated research run. And any report has a **“Discuss report”** button that opens a follow-up thread with the report in context |
+| 🧩 **Everything is a plugin** | The entity is assembled, not compiled-in: tools, models, memory, themes, personas, channels, subagents, MCP servers and the interfaces themselves are plugins you can add, swap or remove. Fifteen ship with the product, and **everything dangerous ships off** |
+| 📜 **A manifest you can audit** | Every plugin is a folder with a `plugin.toml`: twelve slots, deny-by-default permissions, and a SHA-256 over exactly what it claims. Edit the claims without updating the hash and it reports `BROKEN` and refuses to load |
+| 🙋 **Your switch, your permission** | A plugin that wants to write files or reach the network cannot be enabled until you accept what it asks for — and that acceptance is bound to the version you saw |
+| 💬 **A companion, not a form** | Chat with فارا in persistent conversations: follow-up messages, streaming replies, and answers grounded in her actual memory (FTS-matched notes) — the Dot/Muse-style continuity, on your desktop |
+| ✦ **From talk to action** | When a request needs real research, فارا proposes a mission from inside the chat — one click turns it into a fully-gated research run. And any report has a **“Discuss report”** button that opens a follow-up thread with the report in context |
+| ⌨️ **Not only a window** | The same entity runs in a terminal (`vara-tui`, one file over the same core) and on a headless server — which is what a VPS with no graphics actually needs. `vara-plugins` inspects and edits the composition from a shell |
 | 🧠 **Persistent entity** | Missions, memory (SQLite WAL + FTS5), reflections, event log — all in one portable data folder |
 | 🛡 **Provenance gate** | C1 (cited ∈ retrieved) · C2 (`[n]` resolves) · C3 (quotes verbatim in the retrieved text) on every report, with an automatic repair pass and a stored receipt carrying intervals and denominators |
 | 🔐 **Approvals that hold** | Every OS action becomes a backend-minted proposal you approve by id: single-use, time-boxed, digest-bound, and journaled as a receipt in the thread |
+| 🎯 **Goals that know when to stop** | An outcome is a metric with a target or a checklist — never "the model felt finished". Budgets and step ceilings are hard, and a goal that stops moving becomes a question to you instead of a loop |
+| 🧰 **Real tools, not suggestions** | Six read-only tools (`system_info`, `list_dir`, `find_files`, `read_file`, `disk_usage`, `memory_search`) the entity calls itself; the router turns anything above read-only into a proposal even if the model asks to "call" it |
 | 🌐 **Bring any model** | OpenAI-compatible protocol: Z.ai, OpenAI, Ollama, LM Studio, llama-server, vLLM… |
 | 🔎 **Honest research loop** | Plan → search/fetch → live replanning → clean-context writer → checker → repair → report, with a reserved writer budget |
 | 🛰 **Over-the-air updates** | The app checks GitHub releases on every launch and installs new versions with one click — signed updates, no manual reinstalling |
 | 🖥 **Lives with your system** | System tray, close-to-tray, notifications, optional autostart, watched-folder indexing (`file://` provenance) |
 | 🎭 **8 states, 5 styles** | Happy / Focused / Thinking / Excited / Serious / Working / Planning / On Mission — Classic / Dark / Stealth / Tech / Nature |
 | 🌍 **AR + EN** | Full RTL/LTR interface switching |
+
+### The plugins Vara ships
+
+`vara-plugins list` is the source of truth; this is the shape of it.
+
+| Plugin | Slot | Ships | Asks for |
+|---|---|---|---|
+| `vara.tools.read` | tool, toolset | on | read files, read memory |
+| `vara.tools.write` | tool, toolset | **off** | **write files** |
+| `vara.browser.use` | toolset | **off** | **network** |
+| `vara.computer.use` | toolset | **off** | notify |
+| `vara.mcp.client` | mcp | **off** | **run programs, network** |
+| `vara.channels` | channel | **off** | **network, contact you** |
+| `vara.subagents` | subagent | on | — |
+| `vara.swarm.team` | subagent, goal_engine | **off** | — |
+| `vara.goals` | goal_engine | on | — |
+| `vara.skills` | skill | on | read files |
+| `vara.themes` | theme | on | — |
+| `vara.personas` | persona | on | — |
+| `vara.interfaces` | interface | on | — |
+| `vara.brains` | brain | on | — |
+| `vara.memory` | memory | on | read memory |
+
+Writing your own takes a folder and a file — see [`docs/PLUGIN_GUIDE.md`](docs/PLUGIN_GUIDE.md).
+Or ask the entity to draft one for you; it will show you what it does and what it
+asks for, and nothing runs until you agree.
+
 | 📜 **Her rules, in the app** | The entity's own operating rules (`skills/vara/*/SKILL.md`) ship with the app and are readable in Memory — read-only prose, never executable code |
 | 🔓 **Open source forever** | MIT. The provenance checker and its tests ship in the repo. |
 

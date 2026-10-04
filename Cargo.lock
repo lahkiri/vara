@@ -4915,7 +4915,7 @@ dependencies = [
 
 [[package]]
 name = "vara"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "notify",
@@ -4934,7 +4934,7 @@ dependencies = [
 
 [[package]]
 name = "vara-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "form_urlencoded",
  "futures-util",
@@ -4947,7 +4947,23 @@ dependencies = [
  "sha2",
  "thiserror 2.0.21",
  "tokio",
+ "toml 0.8.2",
  "url",
+]
+
+[[package]]
+name = "vara-plugins"
+version = "0.7.0"
+dependencies = [
+ "vara-core",
+]
+
+[[package]]
+name = "vara-tui"
+version = "0.7.0"
+dependencies = [
+ "tokio",
+ "vara-core",
 ]
 
 [[package]]

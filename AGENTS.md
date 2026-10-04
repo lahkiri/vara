@@ -83,3 +83,18 @@ honestly instead of claiming a full desktop build.
 Project-specific skills for agents live in `skills/vara/`. Read the relevant
 one before touching: provenance, DB/migrations, secrets/policy, experiment
 protocol, or definition-of-done.
+
+## Where to start on product work
+
+The living product plan is [`docs/tasks/ALIVE_V2_SPEC.md`](docs/tasks/ALIVE_V2_SPEC.md)
+("the entity is a resident of this PC"), with its enabling contracts in
+[`docs/tasks/ALIVE_PACK.md`](docs/tasks/ALIVE_PACK.md) (tool contract, budget
+ceilings, health checks) and the code-grounded work order in
+[`docs/audit/AUDIT_AND_UPGRADE_PLAN.md`](docs/audit/AUDIT_AND_UPGRADE_PLAN.md).
+Open decisions that only the owner can take are collected in
+[`docs/tasks/QUESTIONS.md`](docs/tasks/QUESTIONS.md) — never block on them;
+pick an independent task and keep the evidence trail.
+
+Working rules there: one task = one branch, failing test first, paste the
+command output as evidence, and never call something done without it. The
+security invariants (1–7 above) outrank any feature request, including this plan.
