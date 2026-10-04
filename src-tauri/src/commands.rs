@@ -1570,7 +1570,21 @@ pub async fn sys_execute(
                 // argv-only: no shell, no composition, secrets scrubbed
                 match CommandPolicy::default().review(&target) {
                     Err(e) => (false, String::new(), format!("refused: {e}")),
-                    Ok(argv) => run_command(&argv, owner_root(&snapshot)).await,
+                    Ok(argv) => {
+                        // The hard-deny floor applies to *this action* too, not
+                        // only to the file-reading tools. Without this, `run`
+                        // could read the owner's own settings.json (which holds
+                        // the provider key) with `type`, and the stdout would
+                        // land in the transcript and the model's context.
+                        match vara_core::tools_registry::check_command_paths(&argv) {
+                            Err(e) => (
+                                false,
+                                String::new(),
+                                format!("refused: {e} — the hard-deny floor covers commands as well as tools"),
+                            ),
+                            Ok(()) => run_command(&argv, owner_root(&snapshot)).await,
+                        }
+                    }
                 }
             }
         }

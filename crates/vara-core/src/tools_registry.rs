@@ -281,26 +281,60 @@ pub const FORBIDDEN_PATH_MARKERS: &[&str] = &[
     "integrity.json",
 ];
 
+/// The hard-deny floor, as a free function so **every** action that can name a
+/// file goes through the same list.
+///
+/// This exists because the floor was first attached to a *tool*: `fs.read_file`
+/// consulted it, while `run` — which can read any file the owner can, through
+/// `type`, `findstr`, `more`, a script, or an installer — did not consult it at
+/// all. So `type %APPDATA%\app.vara.entity\settings.json` passed every check and
+/// its stdout landed in the transcript and the model's context. Attaching the
+/// rule to an action rather than to the *capability* is what made the hole; this
+/// function is the single place the rule now lives.
+pub fn check_forbidden_path(raw: &str) -> Result<(), ToolError> {
+    let lowered = raw.to_lowercase();
+    for marker in FORBIDDEN_PATH_MARKERS {
+        if lowered.contains(marker) {
+            return Err(ToolError::Forbidden {
+                path: raw.to_string(),
+                why: "it is a credential or Vara's own state",
+            });
+        }
+    }
+    if is_secret_env_key(&lowered) {
+        return Err(ToolError::Forbidden {
+            path: raw.to_string(),
+            why: "it names a secret",
+        });
+    }
+    Ok(())
+}
+
+/// Scan a whole command line (program + every argument) for a forbidden path.
+///
+/// Used by the `run` arm before execution. A command that merely *mentions* a
+/// guarded path — as an argument, in `--out=`, after `-o`, quoted, or in a
+/// `VAR=value` form — is refused, because there is no way to execute it and
+/// still guarantee the file was not read.
+pub fn check_command_paths(argv: &[String]) -> Result<(), ToolError> {
+    for arg in argv {
+        // `--flag=path` and `VAR=path` both carry a path in the tail.
+        let candidate = arg
+            .split_once('=')
+            .map(|(_, value)| value)
+            .unwrap_or(arg.as_str());
+        if let Err(e) = check_forbidden_path(candidate) {
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
 impl ToolCtx {
     /// The hard-deny floor. Runs before any tool logic, on the raw argument
     /// text, so no tool can forget it.
     pub fn guard_path(&self, raw: &str) -> Result<(), ToolError> {
-        let lowered = raw.to_lowercase();
-        for marker in FORBIDDEN_PATH_MARKERS {
-            if lowered.contains(marker) {
-                return Err(ToolError::Forbidden {
-                    path: raw.to_string(),
-                    why: "it is a credential or Vara's own state",
-                });
-            }
-        }
-        if is_secret_env_key(&lowered) {
-            return Err(ToolError::Forbidden {
-                path: raw.to_string(),
-                why: "it names a secret",
-            });
-        }
-        Ok(())
+        check_forbidden_path(raw)
     }
 
     /// Resolve a caller-supplied path inside the allowed roots.
@@ -900,5 +934,60 @@ mod tests {
         assert_eq!(human_bytes(999), "999 B");
         assert_eq!(human_bytes(2048), "2.0 KB");
         assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    /// The v0.7.0 hole, frozen: the hard-deny floor guarded the file-reading
+    /// tools but not `run`, so `type %APPDATA%\app.vara.entity\settings.json`
+    /// passed every check and echoed the owner's provider key into the
+    /// transcript. The floor now runs over the argv of every command.
+    #[test]
+    fn a_command_that_names_a_guarded_path_is_refused() {
+        let cases: Vec<Vec<String>> = vec![
+            // The exact command that leaked the key.
+            vec![
+                "type".into(),
+                r"C:\Users\me\AppData\Roaming\app.vara.entity\settings.json".into(),
+            ],
+            // The same read through other tools and spellings.
+            vec!["findstr".into(), ".".into(), r"C:\x\settings.json".into()],
+            vec!["more".into(), r"D:\backup\id_rsa".into()],
+            vec![
+                "tar".into(),
+                "-cf".into(),
+                "out.tar".into(),
+                r"C:\Users\me\.ssh".into(),
+            ],
+            // A path carried in a flag value, and one in a VAR=value form.
+            vec!["prog".into(), r"--config=C:\x\settings.json".into()],
+            vec!["prog".into(), "OUT=C:/x/vara.db".into()],
+            // Case does not matter, and neither does a marker inside a longer name.
+            vec!["prog".into(), r"C:\X\SETTINGS.JSON".into()],
+        ];
+        for argv in cases {
+            assert!(
+                check_command_paths(&argv).is_err(),
+                "this command must be refused: {argv:?}"
+            );
+        }
+    }
+
+    /// …and it must not become a general command filter: ordinary work passes.
+    #[test]
+    fn ordinary_commands_are_not_blocked_by_the_path_floor() {
+        for argv in [
+            vec!["cargo".to_string(), "test".to_string()],
+            vec!["git".to_string(), "status".to_string()],
+            vec!["node".to_string(), "--version".to_string()],
+            vec![
+                "ls".to_string(),
+                "C:/Users/me/Documents/notes.md".to_string(),
+            ],
+            vec!["prog".to_string(), "--out=C:/tmp/report.md".to_string()],
+        ] {
+            assert!(
+                check_command_paths(&argv).is_ok(),
+                "this command is ordinary work and must pass: {argv:?}"
+            );
+        }
     }
 }
