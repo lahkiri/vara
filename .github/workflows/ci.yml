@@ -23,9 +23,19 @@ jobs:
         # ActLoop harness and the protocol-parity lock all run here. A red run
         # means a promise in AGENTS.md no longer holds — do not merge past it.
       - name: Clippy (warnings are errors)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: |
+          cargo clippy -p vara-core -p vara-tui -p vara-plugins --all-targets -- -D warnings
+        # The three crates that build without GTK. `--workspace` would drag in
+        # the Tauri shell, whose `glib-sys` needs `glib-2.0.pc` — absent on a
+        # stock ubuntu runner, so the step died in a build script before linting
+        # a single line of this repository's code. The shell is linted and
+        # compiled where it can be: the `app-check` job on windows-latest, which
+        # links the real Windows APIs. Installing a full desktop stack on the
+        # Linux runner to lint a core that never touches GTK would be worse than
+        # splitting the check, not better.
       - name: Whole-workspace tests (not just the core crate)
-        run: cargo test --workspace
+        run: cargo test --workspace -p vara-core -p vara-tui -p vara-plugins
+        # Same reason as clippy: the core crates on Linux, the shell on Windows.
       - name: Documentation is consistent with the repository
         run: node scripts/check-consistency.mjs
         # This job exists because the repository shipped a release whose notes
