@@ -386,6 +386,39 @@ pub trait ToolHost: Send + Sync {
     fn volume_usage(&self, path: &Path) -> Option<(u64, u64)>;
 }
 
+/// A shared host is still a host.
+///
+/// This is what lets the machine travel over the host/service seam as an
+/// `Arc<dyn ToolHost>`: a caller holding the shared handle can pass it straight
+/// to `ToolRegistry::call`, so substituting the mock for the real filesystem
+/// needs no adapter and no change in the tools.
+impl<T: ToolHost + ?Sized> ToolHost for std::sync::Arc<T> {
+    fn read_dir(&self, path: &Path) -> Result<Vec<HostEntry>, String> {
+        (**self).read_dir(path)
+    }
+    fn read_file(&self, path: &Path, max_bytes: usize) -> Result<String, String> {
+        (**self).read_file(path, max_bytes)
+    }
+    fn file_size(&self, path: &Path) -> Result<u64, String> {
+        (**self).file_size(path)
+    }
+    fn exists(&self, path: &Path) -> bool {
+        (**self).exists(path)
+    }
+    fn is_dir(&self, path: &Path) -> bool {
+        (**self).is_dir(path)
+    }
+    fn walk(&self, root: &Path, max_depth: usize, max_entries: usize) -> Vec<PathBuf> {
+        (**self).walk(root, max_depth, max_entries)
+    }
+    fn system_info(&self) -> SystemInfo {
+        (**self).system_info()
+    }
+    fn volume_usage(&self, path: &Path) -> Option<(u64, u64)> {
+        (**self).volume_usage(path)
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HostEntry {
     pub name: String,

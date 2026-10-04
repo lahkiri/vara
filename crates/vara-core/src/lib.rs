@@ -15,6 +15,7 @@ pub mod host;
 pub mod llm;
 pub mod profile;
 pub mod provenance;
+pub mod seams;
 pub mod tool_loop;
 pub mod tools;
 pub mod tools_local;
