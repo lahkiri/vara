@@ -1,0 +1,13 @@
+[package]
+name = "vara-plugins"
+version = "0.6.0"
+edition = "2021"
+license = "MIT"
+description = "Inspect and manage Vara's plugin composition from a terminal"
+
+[[bin]]
+name = "vara-plugins"
+path = "src/main.rs"
+
+[dependencies]
+vara-core = { path = "../vara-core" }

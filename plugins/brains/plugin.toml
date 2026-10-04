@@ -1,0 +1,10 @@
+id = "vara.brains"
+name = "Model adapters"
+version = "1.0.0"
+summary = "OpenAI-compatible endpoints, plus a local-first option"
+slots = ["brain"]
+shipped = true
+default_enabled = true
+
+[config]
+default = "openai-compatible"

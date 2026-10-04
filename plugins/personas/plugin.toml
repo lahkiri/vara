@@ -1,0 +1,11 @@
+id = "vara.personas"
+name = "Personas"
+version = "1.0.0"
+summary = "Identity packs: how the entity speaks and what it declines to do"
+slots = ["persona"]
+shipped = true
+default_enabled = true
+
+[config]
+default = "resident"
+available = "resident,engineer,warm,direct"

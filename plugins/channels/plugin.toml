@@ -1,0 +1,14 @@
+id = "vara.channels"
+name = "Channels"
+version = "1.0.0"
+summary = "Talk through Discord, Slack or mail — every outbound message needs approval"
+slots = ["channel"]
+shipped = true
+default_enabled = false
+
+[permissions]
+network = true
+notify = true
+
+[config]
+outbound_requires_approval = "always"

@@ -1,0 +1,10 @@
+id = "vara.skills"
+name = "Skills"
+version = "1.0.0"
+summary = "Project skills the model can read before touching a subsystem"
+slots = ["skill"]
+shipped = true
+default_enabled = true
+
+[permissions]
+read_files = true

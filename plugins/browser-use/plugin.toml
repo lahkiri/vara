@@ -1,0 +1,16 @@
+id = "vara.browser.use"
+name = "Browser use"
+version = "1.0.0"
+summary = "Drive a real browser: open pages, read them, fill forms"
+slots = ["toolset", "tool"]
+requires = ["vara.tools.read"]
+shipped = true
+default_enabled = false
+
+[permissions]
+network = true
+read_files = true
+
+[config]
+engine = "webview2"
+headless = "false"

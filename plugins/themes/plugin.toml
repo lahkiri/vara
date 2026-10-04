@@ -1,0 +1,11 @@
+id = "vara.themes"
+name = "Themes"
+version = "1.0.0"
+summary = "Visual tokens the owner can swap without touching code"
+slots = ["theme"]
+shipped = true
+default_enabled = true
+
+[config]
+default = "vara-dark"
+available = "vara-dark,vara-light,high-contrast"

@@ -1,0 +1,16 @@
+id = "vara.computer.use"
+name = "Computer use"
+version = "1.0.0"
+summary = "See the screen and act on it: click, type, verify after each step"
+slots = ["toolset", "tool"]
+shipped = true
+default_enabled = false
+
+[permissions]
+network = false
+read_files = false
+notify = true
+
+[config]
+verify_after_each_step = "true"
+allow_close = "false"

@@ -1,0 +1,12 @@
+id = "vara.interfaces"
+name = "Interfaces"
+version = "1.0.0"
+summary = "Desktop, terminal and headless surfaces over the same entity"
+slots = ["interface"]
+shipped = true
+default_enabled = true
+
+[config]
+desktop = "true"
+tui = "true"
+headless = "false"

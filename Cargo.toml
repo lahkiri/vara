@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/vara-core", "crates/vara-tui", "src-tauri"]
+members = ["crates/vara-core", "crates/vara-tui", "crates/vara-plugins", "src-tauri"]
 
 [workspace.package]
 version = "0.6.0"

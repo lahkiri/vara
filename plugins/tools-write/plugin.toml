@@ -1,0 +1,12 @@
+id = "vara.tools.write"
+name = "Write tools"
+version = "1.0.0"
+summary = "Create, move and trash files — every write needs an undo journal entry"
+slots = ["tool", "toolset"]
+requires = ["vara.tools.read"]
+shipped = true
+default_enabled = false
+
+[permissions]
+read_files = true
+write_files = true

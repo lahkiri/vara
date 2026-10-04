@@ -15,6 +15,7 @@ pub mod heartbeat;
 pub mod host;
 pub mod llm;
 pub mod plugin;
+pub mod plugin_registry;
 pub mod profile;
 pub mod provenance;
 pub mod seams;

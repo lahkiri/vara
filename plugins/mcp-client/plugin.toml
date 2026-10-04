@@ -1,0 +1,14 @@
+id = "vara.mcp.client"
+name = "MCP client"
+version = "1.0.0"
+summary = "Connect Model Context Protocol servers and expose their tools"
+slots = ["mcp", "tool"]
+shipped = true
+default_enabled = false
+
+[permissions]
+network = true
+run_programs = true
+
+[config]
+transport = "stdio"

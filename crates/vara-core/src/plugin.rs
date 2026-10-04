@@ -826,4 +826,3 @@ mod tests {
         assert!(Slot::parse("nonsense").is_none());
     }
 }
-

@@ -4952,6 +4952,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vara-plugins"
+version = "0.6.0"
+dependencies = [
+ "vara-core",
+]
+
+[[package]]
 name = "vara-tui"
 version = "0.6.0"
 dependencies = [

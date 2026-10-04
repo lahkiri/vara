@@ -1,0 +1,11 @@
+id = "vara.goals"
+name = "Goals"
+version = "1.0.0"
+summary = "Outcomes with a measured stopping condition, budgets and stall detection"
+slots = ["goal_engine"]
+shipped = true
+default_enabled = true
+
+[config]
+heartbeat_interval_minutes = "30"
+stall_limit = "3"

@@ -1,0 +1,12 @@
+id = "vara.subagents"
+name = "Subagents"
+version = "1.0.0"
+summary = "Spawn a scoped worker with its own context, budget and tool allow-list"
+slots = ["subagent"]
+requires = ["vara.tools.read"]
+shipped = true
+default_enabled = true
+
+[config]
+max_concurrent = "2"
+default_budget_tokens = "20000"
