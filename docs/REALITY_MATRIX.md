@@ -126,6 +126,40 @@ Two "100% backed" reports; not one page ever fetched.
 
 ---
 
+## F. How this was verified, and what could **not** be verified here
+
+An audit that only lists what it proved is half an audit. This section records the
+limits of the verification itself, so nobody reads the rest as more than it is.
+
+**Verified by running the product, not by tests alone:**
+
+| command | what it proves |
+|---|---|
+| `target\debug\vara-tui.exe "system info please"` → `16 CPU cores · 15.2 GB RAM` | a real process booted, routed a question, called a tool, and the tool reported the machine. `unknown RAM` was the output before the fix (commit `53185e7`) |
+| `cargo test -p vara-core` → 185 + 15 + 5 + 29 + 7 | the core's own suites |
+| `npm run check` · `npx vitest run` (209) · `npm run build` | the frontend typechecks, its tests pass, the production bundle builds |
+| `node scripts/check-consistency.mjs` | 15 plugin folders, version 0.7.0 agreed in all 7 manifests |
+| `cargo clippy --workspace --all-targets` | 2 warnings, 0 errors |
+
+**Could NOT be verified on this machine, and is therefore not claimed:**
+
+- **A live GUI boot.** `target\debug\vara.exe` panics in WebView2:
+  `HRESULT(0x8000FFFF) Catastrophic failure` at `tauri-2.12.1/src/app.rs:1444`,
+  before the app finishes setup. The cause is environmental — an orphaned
+  `msedgewebview2` process that even `taskkill` refuses without elevation — not a
+  defect in the repository. **Consequence: the startup work added in `35082d1`
+  (creating the `Host`, loading `LogPlugin`, recovering interrupted missions) has
+  never executed inside a live GUI process here.** The database shows no
+  `plugins` event, which is the honest evidence that setup did not get that far.
+- **A full mission end to end** (search → fetch → report → gate verdict) against a
+  live provider. Every part is covered by tests; the whole path in one run is not.
+- **The heartbeat firing on its timer** in a live process.
+
+Anything in this document that depends on those three is marked as such, and none
+of the `FIXED` rows above relies on them.
+
+---
+
 ## What this matrix is for
 
 It is the contract between the repository and its own README. A row may only move
@@ -134,3 +168,5 @@ path**, and the command is recorded in the row. Until then, the claim in the
 product text is wrong and must be either fixed or removed.
 
 **The next document is the fix order, and it starts from the rows marked FALSE.**
+
+---
