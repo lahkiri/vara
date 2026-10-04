@@ -124,6 +124,10 @@ pub async fn route_turn(
     }
 
     let ctx = tool_context(state);
+    // `FsToolHost::new()` reads the platform itself now (see
+    // `platform_system_info` in the core), so the shell no longer duplicates that
+    // reader — one implementation, and `system_info` reports RAM instead of
+    // `unknown`.
     let host = FsToolHost::new();
     let outcome = execute_intent(&intent, &registry, &ctx, &host);
 

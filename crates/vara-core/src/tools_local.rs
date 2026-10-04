@@ -14,9 +14,14 @@
 //! ("explain my system" ended in a refused shell command): the entity now has
 //! a legal, typed way to look at the machine instead of proposing `systeminfo | findstr`.
 
+// Re-exported so a shell can build a `SystemInfo` without reaching into the
+// registry module — the memory total is the field only the platform layer can
+// fill in, so naming the type is part of the contract, not an implementation
+// detail.
+pub use crate::tools_registry::SystemInfo;
 use crate::tools_registry::{
     arg_str, arg_str_opt, arg_u64_opt, human_bytes, reject_unknown_args, HostEntry, RiskClass,
-    SystemInfo, Tool, ToolCtx, ToolError, ToolHost, ToolResult, ToolSpec,
+    Tool, ToolCtx, ToolError, ToolHost, ToolResult, ToolSpec,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -177,16 +182,30 @@ impl Default for FsToolHost {
 
 impl FsToolHost {
     pub fn new() -> Self {
-        let info = SystemInfo {
-            os: std::env::consts::OS.to_string(),
-            arch: std::env::consts::ARCH.to_string(),
-            cpus: std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1),
-            total_memory_bytes: total_memory_bytes(),
-            hostname: hostname(),
-        };
+        // `platform_system_info` reads the memory total from the platform. The
+        // older `total_memory_bytes()` returns 0 and *promised* callers would fill
+        // it in — nothing did, so `system_info` answered `unknown RAM`. A probe
+        // caught that the fix existed and was never called, which is the same
+        // "mechanism present, wiring absent" defect this audit keeps finding.
+        let info = platform_system_info();
         Self { info }
+    }
+
+    /// The same host, with facts only the shell can obtain on this platform.
+    ///
+    /// `total_memory_bytes()` in the core returns 0 on purpose: reading RAM means
+    /// linking a platform API, and the core is meant to stay portable and
+    /// dependency-free. So the comment on that function promised "the shell fills
+    /// this in" — and for a long time nothing did, which is why `system_info`
+    /// answered `unknown RAM` on a 16-core machine while advertising itself as
+    /// reporting the machine's memory.
+    ///
+    /// A promise in a comment is not an implementation. This is the missing half:
+    /// the shell supplies what it can read, and `0` stays the honest answer when
+    /// even the shell cannot.
+    pub fn with_info(mut self, info: SystemInfo) -> Self {
+        self.info = info;
+        self
     }
 }
 
@@ -286,12 +305,17 @@ fn hostname() -> String {
         .unwrap_or_else(|_| "this machine".into())
 }
 
-fn total_memory_bytes() -> u64 {
-    // Platform-specific totals are filled in by the shell (it already links the
-    // Windows APIs); the core stays dependency-free and reports 0 when unknown
-    // rather than inventing a number.
-    0
-}
+/// The zero-returning stub that caused the defect, kept only as documentation.
+///
+/// It said "platform totals are filled in by the shell" and nothing filled them,
+/// so `system_info` answered `unknown RAM`. It has no callers now — deleting it
+/// outright is the right end state, but leaving the body visible with the reason
+/// attached is how the next person avoids re-adding it. `platform_total_memory_bytes`
+/// is the replacement and is what `FsToolHost::new` uses.
+#[allow(dead_code)]
+const WHY_THE_PLATFORM_READER_EXISTS: &str = "\
+total_memory_bytes() used to return 0 here and promise that a shell would fill \
+it in. Nothing did. Use platform_total_memory_bytes().";
 
 /// Unix seconds, read once by the caller — tools never touch the clock.
 pub fn now_unix() -> i64 {
@@ -1020,5 +1044,101 @@ mod tests {
             &host,
         );
         assert!(!r.ok);
+    }
+}
+
+/// Facts about this machine, with the memory total read from the platform.
+///
+/// The core has no platform dependency by design, so `total_memory_bytes()`
+/// returns 0 and *promised* callers would fill it in. Nothing did for a long time,
+/// which is why `system_info` answered `unknown RAM` on a machine with 16 cores
+/// while advertising itself as reporting memory. Making the reader a core
+/// function — still dependency-free, still `0` when it cannot be established —
+/// means every surface that builds an `FsToolHost` gets the real value by default
+/// instead of each one needing to remember.
+pub fn platform_system_info() -> SystemInfo {
+    SystemInfo {
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        cpus: std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1),
+        total_memory_bytes: platform_total_memory_bytes(),
+        hostname: hostname(),
+    }
+}
+
+/// Installed physical memory, or `0` when it cannot be established.
+#[cfg(windows)]
+pub fn platform_total_memory_bytes() -> u64 {
+    use std::mem::MaybeUninit;
+    #[repr(C)]
+    struct MemoryStatusEx {
+        length: u32,
+        memory_load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page_file: u64,
+        avail_page_file: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended_virtual: u64,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GlobalMemoryStatusEx(buffer: *mut MemoryStatusEx) -> i32;
+    }
+    let mut status = MaybeUninit::<MemoryStatusEx>::zeroed();
+    unsafe {
+        let p = status.as_mut_ptr();
+        (*p).length = std::mem::size_of::<MemoryStatusEx>() as u32;
+        if GlobalMemoryStatusEx(p) != 0 {
+            return (*p).total_phys;
+        }
+    }
+    0
+}
+
+/// `/proc/meminfo`'s `MemTotal` where it exists; `0` elsewhere.
+#[cfg(not(windows))]
+pub fn platform_total_memory_bytes() -> u64 {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find(|l| l.starts_with("MemTotal:"))
+                .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+                .map(|kb| kb * 1024)
+        })
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod platform_info_tests {
+    use super::*;
+
+    /// The regression this exists for: `system_info` used to answer `unknown RAM`.
+    ///
+    /// The assertion is deliberately conditional on the platform being able to
+    /// answer — but it **fails loudly** if the platform is supported and the value
+    /// is still zero, which is the state that shipped.
+    #[test]
+    fn the_platform_memory_total_is_not_silently_zero() {
+        let total = platform_total_memory_bytes();
+        #[cfg(any(windows, target_os = "linux"))]
+        assert!(
+            total > 0,
+            "this platform can report installed memory, so 0 means the read is broken"
+        );
+        #[cfg(not(any(windows, target_os = "linux")))]
+        let _ = total;
+    }
+
+    #[test]
+    fn platform_system_info_fills_every_field_it_can() {
+        let info = platform_system_info();
+        assert!(!info.os.is_empty(), "os must be known");
+        assert!(info.cpus >= 1, "at least one CPU must be reported");
+        assert!(!info.hostname.is_empty(), "a hostname must be reported");
     }
 }
