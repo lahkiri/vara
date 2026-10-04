@@ -77,8 +77,103 @@ fn writer_max_tokens(writer_budget: i64) -> u32 {
 
 pub struct EntityRuntime {
     pub db: Arc<Database>,
+    /// Where the mission's live events go.
+    ///
+    /// This is a **real seam** ([`crate::seams::seam::LOG`]): a surface that has
+    /// a host can pass a sink resolved from the plugin host, and unregistering
+    /// that plugin stops the events. It is a field rather than a host handle on
+    /// purpose — the runtime must stay constructible without a host, because
+    /// `vara-tui` and the tests run the same entity with no plugin host at all,
+    /// and a capability that is mandatory *there* is not a capability, it is a
+    /// hard-coded dependency wearing a seam's name.
     pub sink: Arc<dyn EventSink>,
     pub http: Arc<HttpClient>,
+}
+
+/// A holder so the seam value is `Sized`.
+///
+/// The host stores every service as `Arc<dyn Any>`, so a bare `dyn EventSinkCap`
+/// cannot be registered. This wrapper is what a plugin registers and what the
+/// runtime reads back.
+pub struct LogCap(pub Arc<dyn crate::seams::EventSinkCap>);
+
+/// Resolve the mission event sink from a plugin host.
+///
+/// Returns the shipped sink when no plugin fills the `log` seam, so a composition
+/// that omits it degrades to the built-in behaviour instead of failing at the
+/// first event. [`require_log_sink`] is the strict variant.
+pub fn sink_from_host(
+    host: &Arc<crate::host::Host>,
+    fallback: Arc<dyn EventSink>,
+) -> Arc<dyn EventSink> {
+    host.service::<LogCap>(crate::seams::seam::LOG)
+        .map(|cap| Arc::new(SeamSink { cap: cap.0.clone() }) as Arc<dyn EventSink>)
+        .unwrap_or(fallback)
+}
+
+/// The same resolution, but an empty seam is reported instead of defaulted.
+///
+/// A mission that silently loses its event stream is a mission the owner cannot
+/// watch, so a surface that needs the plugin can refuse to start without it.
+pub fn require_log_sink(
+    host: &Arc<crate::host::Host>,
+) -> std::result::Result<Arc<dyn EventSink>, String> {
+    host.service::<LogCap>(crate::seams::seam::LOG)
+        .map(|cap| Arc::new(SeamSink { cap: cap.0.clone() }) as Arc<dyn EventSink>)
+        .ok_or_else(|| {
+            "no plugin fills the `log` seam — the mission would have no event stream".to_string()
+        })
+}
+
+/// Bridges the `log` seam to the runtime's event stream.
+struct SeamSink {
+    cap: Arc<dyn crate::seams::EventSinkCap>,
+}
+
+impl EventSink for SeamSink {
+    fn emit(&self, ev: EntityEvent) {
+        // The seam carries one durable line per event. `Arc<dyn EventSinkCap>`
+        // derefs to the trait object, so the call goes through the plugin's
+        // implementation rather than needing an impl for Arc itself.
+        //
+        // The body matters: a first draft of this bridge ended up empty after a
+        // bad textual patch, so every mission event was received and dropped —
+        // `cargo check` passed, and only an assertion on what the plugin
+        // recorded caught it. The trivial-looking line is the whole seam.
+        let cap: &dyn crate::seams::EventSinkCap = self.cap.as_ref();
+        cap.record(ev.kind(), &ev.summary());
+    }
+}
+
+impl EntityEvent {
+    /// A short, stable kind for the durable log (`state`, `activity`, …).
+    pub fn kind(&self) -> &'static str {
+        match self {
+            EntityEvent::State { .. } => "state",
+            EntityEvent::Activity { .. } => "activity",
+            EntityEvent::MissionUpdate { .. } => "mission",
+            EntityEvent::ReportReady { .. } => "report",
+        }
+    }
+
+    /// A one-line, secret-free summary for the durable log.
+    pub fn summary(&self) -> String {
+        match self {
+            EntityEvent::State { state, .. } => state.as_str().to_string(),
+            EntityEvent::Activity { kind, message, .. } => format!("{kind}: {message}"),
+            EntityEvent::MissionUpdate {
+                status,
+                steps_done,
+                max_steps,
+                ..
+            } => format!("{status} {steps_done}/{max_steps}"),
+            EntityEvent::ReportReady {
+                verdict,
+                backed_ratio,
+                ..
+            } => format!("report {verdict} ({:.0}% backed)", backed_ratio * 100.0),
+        }
+    }
 }
 
 pub struct MissionInputs {
@@ -1096,5 +1191,140 @@ mod tests {
             .all(|s| ["search", "fetch", "report"].contains(&s.kind.as_str())));
         assert_eq!(p.steps.last().unwrap().kind, "report");
         assert!(!p.dimensions.is_empty());
+    }
+
+    #[cfg(test)]
+    mod seam_wiring_tests {
+        use super::*;
+        use crate::host::{Host, HostEnv, LogEntry};
+        use crate::seams::{EventSinkCap, LogPlugin};
+        use std::sync::Mutex;
+
+        struct TestEnv;
+        impl HostEnv for TestEnv {
+            fn authorize(&self, _r: &crate::host::GateRequest) -> crate::host::GateDecision {
+                crate::host::GateDecision::Allow
+            }
+            fn log(&self, _e: LogEntry) {}
+        }
+
+        /// Records what the seam carried, so the test can prove events went through
+        /// the plugin rather than through the built-in sink.
+        struct RecordingCap {
+            lines: Mutex<Vec<String>>,
+        }
+        impl EventSinkCap for RecordingCap {
+            fn record(&self, kind: &str, message: &str) {
+                self.lines
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push(format!("{kind}:{message}"));
+            }
+        }
+
+        /// The smallest possible seam check: register a value, read it back.
+        ///
+        /// This exists because the log-seam test below failed and could not say
+        /// *why*. If this passes, the host and the downcast are sound and the fault
+        /// is in the seam's declared type. If it fails, no seam can work at all and
+        /// the "everything is a plugin" claim has no implementation underneath it.
+        #[test]
+        fn a_registered_service_is_readable_for_its_exact_type() {
+            struct PlainPlugin;
+            impl crate::host::Plugin for PlainPlugin {
+                fn id(&self) -> &str {
+                    "probe"
+                }
+                fn start(
+                    &self,
+                    ctx: &crate::host::PluginCtx<'_>,
+                ) -> std::result::Result<Vec<crate::host::Effect>, String> {
+                    let effect = ctx
+                        .register("probe.value", 41u64)
+                        .map_err(|e| e.to_string())?;
+                    Ok(vec![effect])
+                }
+            }
+            let host = std::sync::Arc::new(Host::new(std::sync::Arc::new(TestEnv)));
+            let plugin: std::sync::Arc<dyn crate::host::Plugin> = std::sync::Arc::new(PlainPlugin);
+            host.load(plugin).expect("probe plugin loads");
+
+            let listed = host.services();
+            assert!(
+                listed.iter().any(|(n, _)| n == "probe.value"),
+                "the service must be listed, got {listed:?}"
+            );
+            let got = host.service::<u64>("probe.value");
+            assert_eq!(got.map(|v| *v), Some(41), "exact-type read-back must work");
+        }
+
+        /// The load-bearing test for `docs/REALITY_MATRIX.md` row A.
+        ///
+        /// It proves three things in order, which together are what "the runtime
+        /// takes a capability from a plugin" means:
+        ///   1. with the `log` plugin loaded, mission events go to the plugin;
+        ///   2. unloading the plugin makes the seam resolve to the built-in sink,
+        ///      so the plugin's stream stops;
+        ///   3. a composition with **no** log plugin refuses to hand out a seam
+        ///      handle instead of silently substituting one.
+        #[test]
+        fn the_log_seam_really_replaces_the_sink() {
+            let host = std::sync::Arc::new(Host::new(std::sync::Arc::new(TestEnv)));
+            let cap = std::sync::Arc::new(RecordingCap {
+                lines: Mutex::new(Vec::new()),
+            });
+            let plugin: std::sync::Arc<dyn crate::host::Plugin> =
+                std::sync::Arc::new(LogPlugin::new(cap.clone()));
+            host.load(plugin).expect("the log plugin loads");
+
+            // Diagnostic: what the host actually holds, and whether the seam's
+            // declared type reads back. Printed (not asserted) so a failure below
+            // says which half is broken.
+            let listed = host.services();
+            let direct = host.service::<LogCap>(crate::seams::seam::LOG).is_some();
+            println!("registered: {listed:?}");
+            println!("LogCap readable: {direct}");
+
+            // 1) The seam resolves, and it is the plugin.
+            let sink = sink_from_host(&host, std::sync::Arc::new(NullSink));
+            sink.emit(EntityEvent::Activity {
+                kind: "test".into(),
+                message: "through the plugin".into(),
+                mission_id: Some(1),
+            });
+            let lines = cap.lines.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            assert_eq!(
+                lines,
+                vec!["activity:test: through the plugin".to_string()],
+                "the event must have gone through the registered plugin"
+            );
+
+            // 2) Unloading the plugin empties the seam; the built-in sink takes over.
+            assert!(host.unload("log"), "the plugin unloads");
+            let fallback = sink_from_host(&host, std::sync::Arc::new(NullSink));
+            fallback.emit(EntityEvent::Activity {
+                kind: "test".into(),
+                message: "after unload".into(),
+                mission_id: Some(1),
+            });
+            let lines_after = cap.lines.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            assert_eq!(
+                lines_after.len(),
+                1,
+                "an unloaded plugin must stop receiving events: {lines_after:?}"
+            );
+
+            // 3) Strict resolution reports the empty seam.
+            let strict = require_log_sink(&host);
+            assert!(
+                strict.is_err(),
+                "without a log plugin the strict resolver must refuse, not default"
+            );
+            let msg = strict.err().unwrap_or_default();
+            assert!(
+                msg.contains("log") && msg.contains("event stream"),
+                "the refusal must name the seam: {msg}"
+            );
+        }
     }
 }

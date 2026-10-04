@@ -176,8 +176,11 @@ impl Plugin for LogPlugin {
     }
 
     fn start(&self, ctx: &PluginCtx<'_>) -> Result<Vec<Effect>, String> {
-        let sink = self.sink.clone();
-        Ok(vec![ctx.register(seam::LOG, sink)?])
+        // Register the *same* holder the runtime reads back. The host stores
+        // Arc<dyn Any>, so a bare trait object cannot travel: LogCap is the
+        // type both sides agree on, and entity::sink_from_host is the reader.
+        let cap = crate::entity::LogCap(self.sink.clone());
+        Ok(vec![ctx.register(seam::LOG, cap)?])
     }
 
     fn describe(&self) -> String {
