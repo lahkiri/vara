@@ -382,13 +382,13 @@ impl Tool for ListDirTool {
     fn validate(&self, args: &Value, ctx: &ToolCtx) -> Result<(), ToolError> {
         reject_unknown_args(args, &["path", "limit"])?;
         let path = arg_str(args, "path")?;
-        ctx.resolve(&path)?;
+        ctx.resolve_real(&path)?;
         Ok(())
     }
     fn run(&self, args: &Value, ctx: &ToolCtx, host: &dyn ToolHost) -> ToolResult {
         let raw = arg_str(args, "path").unwrap_or_default();
         let limit = arg_u64_opt(args, "limit").ok().flatten().unwrap_or(25) as usize;
-        let dir = match ctx.resolve(&raw) {
+        let dir = match ctx.resolve_real(&raw) {
             Ok(p) => p,
             Err(e) => return ToolResult::fail(e),
         };
@@ -458,7 +458,7 @@ impl Tool for FindFilesTool {
     fn validate(&self, args: &Value, ctx: &ToolCtx) -> Result<(), ToolError> {
         reject_unknown_args(args, &["query", "ext", "root", "limit"])?;
         if let Some(root) = arg_str_opt(args, "root")? {
-            ctx.resolve(&root)?;
+            ctx.resolve_real(&root)?;
         } else if ctx.roots.is_empty() {
             return Err(ToolError::OutOfRoots {
                 path: "(no allowed folder configured)".into(),
@@ -478,7 +478,7 @@ impl Tool for FindFilesTool {
             .unwrap_or(20)
             .min(100) as usize;
         let roots: Vec<PathBuf> = match arg_str_opt(args, "root").ok().flatten() {
-            Some(raw) => match ctx.resolve(&raw) {
+            Some(raw) => match ctx.resolve_real(&raw) {
                 Ok(p) => vec![p],
                 Err(e) => return ToolResult::fail(e),
             },
@@ -566,7 +566,7 @@ impl Tool for ReadFileTool {
     fn validate(&self, args: &Value, ctx: &ToolCtx) -> Result<(), ToolError> {
         reject_unknown_args(args, &["path", "max_bytes"])?;
         let path = arg_str(args, "path")?;
-        ctx.resolve(&path)?;
+        ctx.resolve_real(&path)?;
         arg_u64_opt(args, "max_bytes")?;
         Ok(())
     }
@@ -577,7 +577,7 @@ impl Tool for ReadFileTool {
             .flatten()
             .unwrap_or(8_000)
             .min(32_000) as usize;
-        let path = match ctx.resolve(&raw) {
+        let path = match ctx.resolve_real(&raw) {
             Ok(p) => p,
             Err(e) => return ToolResult::fail(e),
         };
@@ -630,7 +630,7 @@ impl Tool for DiskUsageTool {
         reject_unknown_args(args, &["path"])?;
         match arg_str_opt(args, "path")? {
             Some(p) => {
-                ctx.resolve(&p)?;
+                ctx.resolve_real(&p)?;
                 Ok(())
             }
             None if !ctx.roots.is_empty() => Ok(()),
@@ -641,7 +641,7 @@ impl Tool for DiskUsageTool {
     }
     fn run(&self, args: &Value, ctx: &ToolCtx, host: &dyn ToolHost) -> ToolResult {
         let path = match arg_str_opt(args, "path").ok().flatten() {
-            Some(raw) => match ctx.resolve(&raw) {
+            Some(raw) => match ctx.resolve_real(&raw) {
                 Ok(p) => p,
                 Err(e) => return ToolResult::fail(e),
             },

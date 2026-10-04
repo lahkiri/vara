@@ -369,6 +369,45 @@ impl ToolCtx {
             path: raw.to_string(),
         })
     }
+
+    /// Resolve, then **prove on the filesystem** that the result is still inside
+    /// a root.
+    ///
+    /// [`ToolCtx::resolve`] is lexical by design (deterministic, testable, no
+    /// I/O), which is not enough on Windows: an NTFS junction or symlink inside
+    /// an allowed folder looks like an ordinary child of that folder but points
+    /// anywhere, so a text-only check lets `read_file` read — and a future write
+    /// tool write — outside the owner's folder. An auditor demonstrated exactly
+    /// that with `mklink /J`.
+    ///
+    /// This is the second half: it asks the filesystem for the real path and
+    /// requires it to stay under a root. It costs one `canonicalize` per access,
+    /// which is the correct price for a boundary that actually holds.
+    ///
+    /// TOCTOU note: the window between this check and the later open is
+    /// unavoidable without opening by handle. The practical attack (a link that
+    /// already exists in the owner's tree) is closed; a race that replaces a
+    /// path between check and use is not, and is recorded here rather than
+    /// pretended away.
+    pub fn resolve_real(&self, raw: &str) -> Result<PathBuf, ToolError> {
+        let lexical = self.resolve(raw)?;
+        // A path that does not exist yet cannot be canonicalized; the lexical
+        // answer is then the best available and the caller's operation will
+        // fail on its own terms.
+        let Ok(real) = std::fs::canonicalize(&lexical) else {
+            return Ok(lexical);
+        };
+        for root in self.roots.paths() {
+            if let Ok(real_root) = std::fs::canonicalize(root) {
+                if real.starts_with(&real_root) {
+                    return Ok(real);
+                }
+            }
+        }
+        Err(ToolError::OutOfRoots {
+            path: raw.to_string(),
+        })
+    }
 }
 
 /// The description of a tool: what the model sees, and what the policy reads.
@@ -989,5 +1028,75 @@ mod tests {
                 "this command is ordinary work and must pass: {argv:?}"
             );
         }
+    }
+
+    /// The escape an auditor demonstrated against v0.7.0, frozen as a test.
+    ///
+    /// A directory junction inside an allowed root looks like an ordinary child
+    /// of that root but points anywhere. `resolve` is lexical and cannot know;
+    /// `resolve_real` asks the filesystem and must refuse.
+    ///
+    /// Skipped only when the platform cannot create a junction, so the test
+    /// states its own requirement instead of passing vacuously.
+    #[test]
+    fn a_junction_inside_a_root_cannot_escape_it() {
+        let base = std::env::temp_dir().join(format!("vara-junction-{}", std::process::id()));
+        let root = base.join("workspace");
+        let outside = base.join("secret");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("canary.txt"), "TOP-SECRET").unwrap();
+
+        let link = root.join("escape");
+        #[cfg(windows)]
+        let created = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&outside)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        #[cfg(unix)]
+        let created = std::os::unix::fs::symlink(&outside, &link).is_ok();
+
+        if !created {
+            // Do not pass silently: say what was not exercised.
+            eprintln!("junction/symlink could not be created here — escape not exercised");
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+
+        let ctx = ToolCtx {
+            roots: crate::tools_registry::Roots::new(vec![root.clone()]),
+            now_unix: 0,
+            denied_paths: Vec::new(),
+            memory: None,
+        };
+        let through = link.join("canary.txt");
+        let spelled = through.to_string_lossy().to_string();
+
+        // The lexical check cannot see it — that is the defect.
+        assert!(
+            ctx.resolve(&spelled).is_ok(),
+            "the lexical check is expected to accept a junction's text path"
+        );
+
+        // The real check must refuse.
+        let real = ctx.resolve_real(&spelled);
+        assert!(
+            real.is_err(),
+            "resolve_real must refuse a path reached through a junction, got {real:?}"
+        );
+
+        // And a genuine file inside the root still resolves.
+        let inside = root.join("notes.md");
+        std::fs::write(&inside, "hello").unwrap();
+        assert!(
+            ctx.resolve_real(&inside.to_string_lossy()).is_ok(),
+            "an ordinary file inside the root must still be readable"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
