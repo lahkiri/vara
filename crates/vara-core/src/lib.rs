@@ -10,6 +10,7 @@ pub mod db;
 pub mod dedup;
 pub mod entity;
 pub mod exec_policy;
+pub mod goals;
 pub mod heartbeat;
 pub mod host;
 pub mod llm;
