@@ -448,7 +448,22 @@ impl EntityRuntime {
             "Writing the report (provenance enforced)…",
             Some(mission_id),
         );
-        let retrieved_urls: Vec<String> = ledger.iter().map(|s| s.url.clone()).collect();
+        // C1 means "the source was actually retrieved". A search hit proves only
+        // that the URL was *seen* in a result list; before this, both kinds were
+        // flattened into one `Vec<String>`, so a report could cite a page that
+        // was never opened and still pass C1 with backed_ratio = 1.0.
+        let retrieved_urls: Vec<String> = ledger
+            .iter()
+            .filter(|s| s.fetched)
+            .map(|s| s.url.clone())
+            .collect();
+        // Kept separately so the gate can say *why* a citation failed instead of
+        // reporting a bare "not retrieved".
+        let unfetched_urls: Vec<String> = ledger
+            .iter()
+            .filter(|s| !s.fetched)
+            .map(|s| s.url.clone())
+            .collect();
         let sources_json = serde_json::to_value(&ledger).unwrap_or(serde_json::json!([]));
 
         let writer_allowance = writer_max_tokens(writer_budget);
@@ -488,8 +503,15 @@ impl EntityRuntime {
         // shown without its denominator, its interval, and — when something
         // could not be checked — the honest reason why.
         let snapshots = self.snapshots_for(&ledger);
+        // A snapshot is only evidence if its page was actually fetched. A search
+        // hit's note is a ~200-char snippet the search engine wrote — quoting it
+        // would let the snippet source grade its own claim.
         let (check, receipt, claims) =
             provenance::check_provenance_full(&markdown, &retrieved_urls, &snapshots);
+        // Naming the never-fetched citations turns a bare FAIL into an instruction
+        // the owner (and the repair pass) can act on.
+        let (check, receipt) =
+            provenance::name_unfetched_citations(check, receipt, &markdown, &unfetched_urls);
         let mut report_id = self
             .db
             .insert_report(

@@ -123,3 +123,65 @@ fn section_level_uncovered_detection() {
     assert!(fabricated.effectively_uncovered);
     assert_eq!(r.verdict, "FAIL");
 }
+
+/// The v0.7.0 defect, frozen as a regression test.
+///
+/// The mission runner used to hand the gate every URL it had *seen*, including
+/// search results whose page was never opened, so a report could cite a page
+/// nobody fetched and still PASS C1 with `backed_ratio = 1.0`. The runner now
+/// passes only fetched URLs and names the rest, and this test pins both halves:
+///
+/// 1. a citation whose source was never fetched must FAIL C1 (the old input
+///    would have passed it), and
+/// 2. `name_unfetched_citations` must say *which* URL was only seen, so the
+///    failure is actionable rather than a bare "not retrieved".
+#[test]
+fn a_citation_to_a_never_fetched_search_hit_is_named_and_fails() {
+    // The shape a real report has: an in-body [n] reference and a numbered
+    // source line. Both are needed for the citation to count at all.
+    let report = "The benchmark dropped the cost per token [1].\n\n## Sources\n[1] https://bench.dev/llama3 — Llama 3 report\n";
+    let url = "https://bench.dev/llama3";
+
+    // The ledger's honest view: the URL was seen in search results, never fetched.
+    let fetched: Vec<String> = Vec::new();
+    let unfetched = vec![url.to_string()];
+
+    let (check, receipt, _claims) =
+        vara_core::provenance::check_provenance_full(report, &fetched, &[]);
+
+    // 1) C1 fails, because nothing was retrieved.
+    assert_eq!(
+        check.verdict, "FAIL",
+        "a citation to a page that was never fetched must not pass C1"
+    );
+    assert!(
+        !check.checks.c1_all_cited_in_retrieved,
+        "C1 must be false when the only cited URL was never fetched"
+    );
+
+    // 2) …and the gate can name it.
+    let (check, receipt) =
+        vara_core::provenance::name_unfetched_citations(check, receipt, report, &unfetched);
+    assert_eq!(
+        receipt.cited_never_fetched,
+        vec![url.to_string()],
+        "the never-fetched citation must be named, not just counted"
+    );
+    assert!(
+        check
+            .cited_not_retrieved
+            .iter()
+            .any(|line| line.contains("never fetched") && line.contains(url)),
+        "the failure line must explain that the page was only seen: {:?}",
+        check.cited_not_retrieved
+    );
+
+    // 3) The counter-example: the OLD input (seen URLs treated as retrieved)
+    //    passes C1. This is the bug being fixed, asserted rather than implied.
+    let seen_only = vec![url.to_string()];
+    let old = vara_core::provenance::check_provenance(report, &seen_only);
+    assert_eq!(
+        old.verdict, "PASS",
+        "this is what shipped in v0.7.0: flattening seen URLs into `retrieved` passed C1"
+    );
+}

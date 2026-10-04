@@ -426,6 +426,12 @@ pub struct GateReceipt {
     /// The offending quotes when `c3 == Some(false)`. A FAIL has to name what
     /// failed, otherwise it is an unexplainable badge.
     pub missing_quotes: Vec<String>,
+    /// URLs the report cited that were only *seen* in a search result and
+    /// never fetched. Empty is the healthy case. Kept apart from
+    /// `missing_quotes` because the repair differs: a missing quote means
+    /// "rewrite", an unfetched citation means "actually open the page".
+    #[serde(default)]
+    pub cited_never_fetched: Vec<String>,
 }
 
 /// Run the structural gate **and** the Tier-0 claim audit.
@@ -537,6 +543,11 @@ pub fn check_provenance_full(
         c3,
         not_evaluable_reason,
         missing_quotes: stats.missing_quotes,
+        // Filled by `name_unfetched_citations` when the caller knows which
+        // ledger entries were seen-but-never-fetched. Empty here is not a claim
+        // that every citation was fetched; it means the caller did not supply
+        // that information.
+        cited_never_fetched: Vec::new(),
     };
     (result, receipt, audits)
 }
@@ -999,4 +1010,66 @@ fn dot_ends_sentence(chars: &[(usize, char)], i: usize) -> bool {
         None => true,
         Some(n) => !(n.is_lowercase() || n.is_ascii_digit()),
     }
+}
+
+/// Name the citations whose source was only *seen*, never fetched.
+///
+/// C1 now receives only fetched URLs, so such a citation already fails — but a
+/// bare "not retrieved" hides the most actionable fact in the whole gate: the
+/// URL was in the mission's ledger as a search hit and nobody opened it. This
+/// adds those URLs to `cited_not_retrieved` (deduplicated) and records the
+/// count in the receipt, so the repair brief and the UI can say *why*.
+///
+/// Deliberately additive and side-effect free: it never turns a FAIL into a
+/// PASS, and it returns its inputs unchanged when there is nothing to name.
+pub fn name_unfetched_citations(
+    mut result: ProvenanceResult,
+    mut receipt: GateReceipt,
+    report: &str,
+    unfetched: &[String],
+) -> (ProvenanceResult, GateReceipt) {
+    if unfetched.is_empty() {
+        return (result, receipt);
+    }
+    let (body, src_section) = split_body_sources(report);
+    // Every URL the report actually cites, normalized.
+    let cited: Vec<(i64, String)> = parse_source_entries(&src_section)
+        .iter()
+        .filter_map(|(n, u)| n.map(|n| (n, normalize_url(u))))
+        .collect();
+    let numbers_used: Vec<i64> = {
+        // `inline_ref_re` is what C2 uses for in-body `[n]` references. Using
+        // `numbered_line_re` here was a bug in this helper's first version: it
+        // matches a number at the *start of a line*, so an ordinary in-body
+        // citation like "…cost per token [1]." was invisible and the URL was
+        // never named — the helper silently reported "nothing to name".
+        let mut v: Vec<i64> = inline_ref_re()
+            .captures_iter(&body)
+            .filter_map(|c| c.get(1).and_then(|m| m.as_str().parse().ok()))
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+
+    let mut named: Vec<String> = Vec::new();
+    for url in unfetched {
+        let key = normalize_url(url);
+        let Some((n, _)) = cited.iter().find(|(_, u)| *u == key) else {
+            continue; // not cited at all — C1 already ignores it
+        };
+        if !numbers_used.contains(n) {
+            continue; // cited in the source list but never referenced in the body
+        }
+        result.cited_not_retrieved.push(format!(
+            "{url} (never fetched — seen in search results only)"
+        ));
+        named.push(url.clone());
+    }
+    if !named.is_empty() {
+        result.cited_not_retrieved.sort();
+        result.cited_not_retrieved.dedup();
+        receipt.cited_never_fetched = named;
+    }
+    (result, receipt)
 }
