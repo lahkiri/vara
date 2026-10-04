@@ -6,9 +6,12 @@ slots = ["mcp", "tool"]
 shipped = true
 default_enabled = false
 
+sha256 = "6d123d8d42baf0c60b3aedb07c6a777ac511ddeb3d6f380c14c9cc93fa862087"
+
 [permissions]
 network = true
 run_programs = true
 
 [config]
 transport = "stdio"
+

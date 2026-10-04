@@ -6,9 +6,12 @@ slots = ["channel"]
 shipped = true
 default_enabled = false
 
+sha256 = "f6388e146e9e150d7cff54b19089b54de4065640f4b9c4e629174ad1c28bbc67"
+
 [permissions]
 network = true
 notify = true
 
 [config]
 outbound_requires_approval = "always"
+

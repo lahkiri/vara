@@ -6,6 +6,9 @@ slots = ["theme"]
 shipped = true
 default_enabled = true
 
+sha256 = "195616f2ae58b1b7a6a546aed4f36f16a204bc109861f5c9e2579e3048a3bf86"
+
 [config]
 default = "vara-dark"
 available = "vara-dark,vara-light,high-contrast"
+

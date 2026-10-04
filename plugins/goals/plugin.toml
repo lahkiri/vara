@@ -6,6 +6,9 @@ slots = ["goal_engine"]
 shipped = true
 default_enabled = true
 
+sha256 = "4fb636681e62b1eb2937ef38f2968b5a53701c0b9706958f9e50a86dd3a2bb1b"
+
 [config]
 heartbeat_interval_minutes = "30"
 stall_limit = "3"
+

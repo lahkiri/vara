@@ -6,7 +6,10 @@ slots = ["interface"]
 shipped = true
 default_enabled = true
 
+sha256 = "7f3b31006b002bb59654dd59c61b379821e7451c1d8e653bf06b67a0854dee65"
+
 [config]
 desktop = "true"
 tui = "true"
 headless = "false"
+

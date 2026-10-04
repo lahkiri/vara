@@ -6,6 +6,8 @@ slots = ["toolset", "tool"]
 shipped = true
 default_enabled = false
 
+sha256 = "87d09fd0c6e600fb3db627c68f704a4d7ba5d242e090f4852054fb1d5a5ea3ff"
+
 [permissions]
 network = false
 read_files = false
@@ -14,3 +16,4 @@ notify = true
 [config]
 verify_after_each_step = "true"
 allow_close = "false"
+

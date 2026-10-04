@@ -7,6 +7,9 @@ requires = ["vara.tools.read"]
 shipped = true
 default_enabled = false
 
+sha256 = "0a0635d6bf8f06a2d30aec75f0ccf2cc6a5aa4ecb2375550040deb63579d2976"
+
 [permissions]
 read_files = true
 write_files = true
+

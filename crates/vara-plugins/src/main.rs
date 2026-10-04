@@ -158,6 +158,35 @@ fn main() {
                 }
             }
         }
+        "hash" => {
+            let path = args.get(1).unwrap_or_else(|| {
+                eprintln!("usage: vara-plugins hash <plugin-folder>");
+                std::process::exit(2);
+            });
+            let folder = PathBuf::from(path);
+            match vara_core::plugin::PluginFolder::load(&folder, false) {
+                Ok(found) => {
+                    let mut manifest = found.manifest.clone();
+                    manifest.apply_hash();
+                    println!("manifest sha256 : {}", manifest.sha256);
+                    println!(
+                        "  paste into plugin.toml as:  sha256 = \"{}\"",
+                        manifest.sha256
+                    );
+                    match found.content_hash() {
+                        Ok(content) => {
+                            println!("content sha256  : {content}");
+                            println!("  (over every file in the folder — publish this one)");
+                        }
+                        Err(why) => eprintln!("content hash failed: {why}"),
+                    }
+                }
+                Err(why) => {
+                    eprintln!("{why}");
+                    std::process::exit(1);
+                }
+            }
+        }
         "check" => {
             // A composition with nothing enabled is a product mistake, and a bad
             // plan is a bug: both belong in CI, not in a user's first launch.
@@ -178,7 +207,7 @@ fn main() {
             }
         }
         other => {
-            eprintln!("unknown command '{other}'. Try: list, plan, check, enable <id>, disable <id>, approve <id>");
+            eprintln!("unknown command '{other}'. Try: list, plan, check, hash <dir>, enable <id>, disable <id>, approve <id>");
             std::process::exit(2);
         }
     }

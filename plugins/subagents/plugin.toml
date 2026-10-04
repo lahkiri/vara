@@ -7,6 +7,9 @@ requires = ["vara.tools.read"]
 shipped = true
 default_enabled = true
 
+sha256 = "0a8a2a1bd8ae189ef7b7b96851fbd4299f12085e2c820d445586920bcd016375"
+
 [config]
 max_concurrent = "2"
 default_budget_tokens = "20000"
+

@@ -6,5 +6,8 @@ slots = ["skill"]
 shipped = true
 default_enabled = true
 
+sha256 = "5bd0d1cb67d0efbbe20064134992d2ebf6d80d718dbb7da576c10fc55600865b"
+
 [permissions]
 read_files = true
+
