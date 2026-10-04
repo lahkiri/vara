@@ -79,15 +79,13 @@ pub fn run() {
     // Giving the dev build its own folder is also correct on its own terms: a
     // development instance must never touch the owner's real conversations and
     // memory, which is what sharing the profile would mean.
-    if cfg!(debug_assertions) {
-        if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none() {
-            if let Ok(base) = std::env::var("LOCALAPPDATA") {
-                let dir = std::path::Path::new(&base)
-                    .join("app.vara.entity.dev")
-                    .join("EBWebView");
-                if std::fs::create_dir_all(&dir).is_ok() {
-                    std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir);
-                }
+    if cfg!(debug_assertions) && std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none() {
+        if let Ok(base) = std::env::var("LOCALAPPDATA") {
+            let dir = std::path::Path::new(&base)
+                .join("app.vara.entity.dev")
+                .join("EBWebView");
+            if std::fs::create_dir_all(&dir).is_ok() {
+                std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir);
             }
         }
     }

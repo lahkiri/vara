@@ -91,14 +91,26 @@ for (const name of readdirSync(pluginRoot).sort()) {
     // A folder carrying only a theme or a persona is legitimate: it is an asset
     // pack, not a capability. It must still be declared somewhere, so it is
     // reported rather than ignored.
-    const assets = ["theme.toml", "persona.toml"].filter((a) => existsSync(join(dir, a)));
+    // A slot folder may carry its assets either as `theme.toml`/`persona.toml` or as
+    // named `<theme>.toml` files beside the manifest, which is the layout the
+    // repository uses so the plugin count stays unambiguously one-per-capability.
+    const named = readdirSync(dir).filter(
+      (f) => f.endsWith(".toml") && f !== "plugin.toml",
+    );
+    const assets = named.length ? named : ["theme.toml", "persona.toml"].filter((a) => existsSync(join(dir, a)));
     plugins.push({ folder: name, assets, manifest: null });
     continue;
   }
 
   const text = readFileSync(manifestPath, "utf8");
   const manifest = parseToml(text);
-  const assets = ["theme.toml", "persona.toml"].filter((a) => existsSync(join(dir, a)));
+  // A slot folder may carry its assets either as `theme.toml`/`persona.toml` or as
+    // named `<theme>.toml` files beside the manifest, which is the layout the
+    // repository uses so the plugin count stays unambiguously one-per-capability.
+    const named = readdirSync(dir).filter(
+      (f) => f.endsWith(".toml") && f !== "plugin.toml",
+    );
+    const assets = named.length ? named : ["theme.toml", "persona.toml"].filter((a) => existsSync(join(dir, a)));
   plugins.push({ folder: name, assets, manifest, text });
 }
 

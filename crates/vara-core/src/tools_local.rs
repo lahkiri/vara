@@ -208,7 +208,7 @@ impl ToolHost for FsToolHost {
                 bytes: meta.as_ref().map(|m| m.len()).unwrap_or(0),
             });
         }
-        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        out.sort_by_key(|a| a.name.to_lowercase());
         Ok(out)
     }
 
@@ -396,7 +396,7 @@ impl Tool for ListDirTool {
             Err(why) => ToolResult::fail(ToolError::Failed { why }),
             Ok(mut entries) => {
                 let total = entries.len();
-                entries.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+                entries.sort_by_key(|e| std::cmp::Reverse(e.bytes));
                 let shown: Vec<Value> = entries
                     .iter()
                     .take(limit)
@@ -505,7 +505,7 @@ impl Tool for FindFilesTool {
             }
         }
         let total = hits.len();
-        hits.sort_by(|a, b| b.1.cmp(&a.1));
+        hits.sort_by_key(|h| std::cmp::Reverse(h.1));
         let shown: Vec<Value> = hits
             .iter()
             .take(limit)

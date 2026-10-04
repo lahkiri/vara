@@ -228,7 +228,7 @@ impl Roots {
 /// Note what is *absent*: no ambient `std::env`, no global clock, no
 /// filesystem handle. A tool that needs the network or the clock is handed it
 /// explicitly, which is what makes the harness deterministic.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ToolCtx {
     pub roots: Roots,
     /// Unix seconds, supplied by the caller (never read inside a tool).
@@ -238,17 +238,6 @@ pub struct ToolCtx {
     /// Vara's own memory, when the caller can offer it. A trait object keeps
     /// the tool layer free of any SQLite dependency.
     pub memory: Option<std::sync::Arc<dyn crate::tools_local::MemoryProvider>>,
-}
-
-impl Default for ToolCtx {
-    fn default() -> Self {
-        Self {
-            roots: Roots::default(),
-            now_unix: 0,
-            denied_paths: Vec::new(),
-            memory: None,
-        }
-    }
 }
 
 /// Manual `Debug`: the memory handle is a trait object, and a tool context
@@ -323,9 +312,7 @@ pub fn check_command_paths(argv: &[String]) -> Result<(), ToolError> {
             .split_once('=')
             .map(|(_, value)| value)
             .unwrap_or(arg.as_str());
-        if let Err(e) = check_forbidden_path(candidate) {
-            return Err(e);
-        }
+        check_forbidden_path(candidate)?;
     }
     Ok(())
 }

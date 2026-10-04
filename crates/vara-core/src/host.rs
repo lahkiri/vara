@@ -307,6 +307,8 @@ pub trait Plugin: Send + Sync {
     }
 }
 
+/// One subscribed listener. Named because it appears in three signatures and an
+/// inline Arc<dyn Fn…> three times is where typos in a bus live.
 type Handler = Arc<dyn Fn(&Event) + Send + Sync>;
 type Listener = (PluginId, Handler);
 
@@ -494,7 +496,7 @@ impl Host {
     /// is free to subscribe, unsubscribe or emit again — no lock is held while
     /// user code runs, and no raw pointers are involved.
     pub fn dispatch(&self, event: &Event) {
-        let handlers: Vec<Arc<dyn Fn(&Event) + Send + Sync>> = {
+        let handlers: Vec<Handler> = {
             let map = self.listeners.lock().unwrap_or_else(|p| p.into_inner());
             map.get(&event.name)
                 .map(|list| list.iter().map(|(_, f)| f.clone()).collect())

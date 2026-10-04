@@ -22,6 +22,15 @@ jobs:
         # This is the release gate: the provenance gate, the action policy, the
         # ActLoop harness and the protocol-parity lock all run here. A red run
         # means a promise in AGENTS.md no longer holds — do not merge past it.
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Whole-workspace tests (not just the core crate)
+        run: cargo test --workspace
+      - name: Documentation is consistent with the repository
+        run: node scripts/check-consistency.mjs
+        # This job exists because the repository shipped a release whose notes
+        # described files that were never committed. The script derives the
+        # plugin inventory from plugins/ and fails when any document disagrees.
 
   provenance-gate:
     name: Provenance gate regression (v1 data)

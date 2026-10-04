@@ -492,19 +492,14 @@ impl Database {
         let conn = self.conn();
         if self.fts {
             let sanitized = format!("\"{}\"", q.replace('"', "\"\""));
-            let sql = format!(
-                "SELECT n.id, n.created_at, n.kind, n.title, n.body, n.mission_id, n.source_url, n.source_title
+            let sql = "SELECT n.id, n.created_at, n.kind, n.title, n.body, n.mission_id, n.source_url, n.source_title
                  FROM notes_fts f JOIN notes n ON n.id = f.rowid
-                 WHERE notes_fts MATCH ?1 ORDER BY bm25(notes_fts) LIMIT ?2"
-            );
+                 WHERE notes_fts MATCH ?1 ORDER BY bm25(notes_fts) LIMIT ?2".to_string();
             let mut stmt = conn.prepare(&sql)?;
             let mapped =
                 stmt.query_map(params![sanitized, limit.clamp(1, 200)], Self::note_from_row);
             let collected: Option<Vec<Note>> = match mapped {
-                Ok(rows) => match rows.collect::<std::result::Result<Vec<_>, _>>() {
-                    Ok(v) => Some(v),
-                    Err(_) => None,
-                },
+                Ok(rows) => rows.collect::<std::result::Result<Vec<_>, _>>().ok(),
                 Err(_) => None,
             };
             if let Some(v) = collected {
@@ -540,11 +535,9 @@ impl Database {
                 .map(|k| format!("\"{}\"", k.replace('"', "\"\"")))
                 .collect::<Vec<_>>()
                 .join(" OR ");
-            let sql = format!(
-                "SELECT n.id, n.created_at, n.kind, n.title, n.body, n.mission_id, n.source_url, n.source_title
+            let sql = "SELECT n.id, n.created_at, n.kind, n.title, n.body, n.mission_id, n.source_url, n.source_title
                  FROM notes_fts f JOIN notes n ON n.id = f.rowid
-                 WHERE notes_fts MATCH ?1 ORDER BY bm25(notes_fts) LIMIT ?2"
-            );
+                 WHERE notes_fts MATCH ?1 ORDER BY bm25(notes_fts) LIMIT ?2".to_string();
             let mut stmt = conn.prepare(&sql)?;
             let mapped = stmt.query_map(params![q, limit.clamp(1, 200)], Self::note_from_row);
             if let Ok(rows) = mapped {

@@ -243,7 +243,7 @@ impl CuOp {
     pub fn tag(&self) -> &'static str {
         match self {
             CuOp::Screenshot { .. } | CuOp::Shot { .. } => "screenshot",
-            CuOp::Verify { .. } => "verify",
+            CuOp::Verify => "verify",
             CuOp::Focus { .. } => "focus",
             CuOp::Click { .. } => "click",
             CuOp::ClickWin { .. } => "click_win",
@@ -263,7 +263,7 @@ impl CuOp {
     /// The autonomy ladder level this op demands.
     pub fn grant_level(&self) -> GrantLevel {
         match self {
-            CuOp::Screenshot { .. } | CuOp::Shot { .. } | CuOp::Verify { .. } => GrantLevel::L0,
+            CuOp::Screenshot { .. } | CuOp::Shot { .. } | CuOp::Verify => GrantLevel::L0,
             CuOp::Wait { .. } | CuOp::IgnoreErrors => GrantLevel::L0,
             CuOp::Focus { .. }
             | CuOp::Click { .. }
@@ -283,7 +283,7 @@ impl CuOp {
     pub fn is_see(&self) -> bool {
         matches!(
             self,
-            CuOp::Screenshot { .. } | CuOp::Shot { .. } | CuOp::Verify { .. }
+            CuOp::Screenshot { .. } | CuOp::Shot { .. } | CuOp::Verify
         )
     }
 

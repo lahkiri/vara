@@ -655,17 +655,25 @@ mod tests {
 
     #[test]
     fn the_dangerous_permissions_are_the_ones_that_show_in_a_card() {
-        let mut p = Permissions::default();
-        p.read_files = true;
+        let p = Permissions {
+            read_files: true,
+            ..Permissions::default()
+        };
         assert!(p.is_read_only());
         assert!(p.dangerous().is_empty());
 
-        p.write_files = true;
-        p.network = true;
-        let danger = p.dangerous();
+        // A second value rather than mutating in place: the read-only set and the
+        // dangerous set are different permissions, so they read as two objects.
+        let dangerous = Permissions {
+            read_files: true,
+            write_files: true,
+            network: true,
+            ..Permissions::default()
+        };
+        let danger = dangerous.dangerous();
         assert!(danger.contains(&"write files"));
         assert!(danger.contains(&"use the network"));
-        assert!(!p.is_read_only());
+        assert!(!dangerous.is_read_only());
     }
 
     #[test]
@@ -746,7 +754,7 @@ mod tests {
         // A folder with no manifest at all is skipped, not an error.
         std::fs::create_dir_all(dir.join("not-a-plugin")).unwrap();
 
-        let results = discover(&[dir.clone()], true);
+        let results = discover(std::slice::from_ref(&dir), true);
         assert_eq!(results.len(), 2, "the manifest-less folder must be skipped");
         let ok = results.iter().filter(|r| r.is_ok()).count();
         assert_eq!(ok, 1);

@@ -859,7 +859,7 @@ pub async fn send_chat(
                 let mut started_mission: Option<i64> = None;
                 if let Some(g) = goal.clone() {
                     if !stopped {
-                        let should = app2.try_state::<AppState>().map_or(false, |st| {
+                        let should = app2.try_state::<AppState>().is_some_and(|st| {
                             st.settings_snapshot().autonomy.auto_start_missions
                                 && !st.busy.load(Ordering::SeqCst)
                         });
@@ -1141,7 +1141,7 @@ async fn capture_screen(app: &AppHandle) -> (bool, String, String) {
 /// Runs one OS action Vara proposed in the chat. The autonomy policy is
 /// enforced HERE, in the shell — the model never executes anything itself.
 /// Every receipt lands in the thread as an action card.
-
+///
 /// The entity's hands: validate → policy-gate → run the ActLoop against the
 /// MCP sidecar → journal every step. Returns (ok, output_json, error).
 fn run_computer_use(

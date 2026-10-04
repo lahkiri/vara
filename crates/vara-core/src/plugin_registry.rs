@@ -245,7 +245,7 @@ impl PluginRegistry {
         let mut withheld = Vec::new();
         for (id, requires) in &enabled {
             for dep in requires {
-                let dep_enabled = enabled_ids.iter().any(|e| *e == dep);
+                let dep_enabled = enabled_ids.contains(&dep);
                 let dep_exists = self.rows.iter().any(|r| &r.id == dep);
                 if !dep_enabled {
                     withheld.push(format!(
@@ -380,7 +380,7 @@ mod tests {
         );
         let state = root.join("state.json");
 
-        let reg = PluginRegistry::scan(&[root.clone()], &state);
+        let reg = PluginRegistry::scan(std::slice::from_ref(&root), &state);
         assert_eq!(reg.rows().len(), 2);
         assert!(reg.get("vara.a").unwrap().enabled);
         assert!(!reg.get("vara.b").unwrap().enabled);
@@ -394,7 +394,7 @@ mod tests {
         write_plugin(&root, "w", "vara.w", vec![Slot::Tool], vec![], true, true);
         let state = root.join("state.json");
 
-        let mut reg = PluginRegistry::scan(&[root.clone()], &state);
+        let mut reg = PluginRegistry::scan(std::slice::from_ref(&root), &state);
         let row = reg.get("vara.w").unwrap();
         assert!(!row.approved, "dangerous permissions start unapproved");
         assert_eq!(row.asks, vec!["write files".to_string()]);
@@ -414,7 +414,7 @@ mod tests {
         let root = tmp("rebind");
         let dir = write_plugin(&root, "w", "vara.w", vec![Slot::Tool], vec![], true, true);
         let state = root.join("state.json");
-        let mut reg = PluginRegistry::scan(&[root.clone()], &state);
+        let mut reg = PluginRegistry::scan(std::slice::from_ref(&root), &state);
         reg.approve("vara.w").unwrap();
 
         // The plugin now asks for MORE than what was approved.
@@ -440,7 +440,7 @@ mod tests {
         m.apply_hash();
         std::fs::write(dir.join("plugin.toml"), toml::to_string(&m).unwrap()).unwrap();
 
-        let reg = PluginRegistry::scan(&[root.clone()], &state);
+        let reg = PluginRegistry::scan(std::slice::from_ref(&root), &state);
         assert!(
             !reg.get("vara.w").unwrap().approved,
             "a changed permission set must require a new approval"
@@ -454,10 +454,10 @@ mod tests {
         write_plugin(&root, "a", "vara.a", vec![Slot::Tool], vec![], false, true);
         let state = root.join("state.json");
 
-        let mut reg = PluginRegistry::scan(&[root.clone()], &state);
+        let mut reg = PluginRegistry::scan(std::slice::from_ref(&root), &state);
         reg.set_enabled("vara.a", false).unwrap();
 
-        let again = PluginRegistry::scan(&[root.clone()], &state);
+        let again = PluginRegistry::scan(std::slice::from_ref(&root), &state);
         assert!(
             !again.get("vara.a").unwrap().enabled,
             "the owner's decision must persist"
@@ -472,7 +472,7 @@ mod tests {
         let state = root.join("state.json");
         std::fs::write(&state, "{ this is not json").unwrap();
 
-        let reg = PluginRegistry::scan(&[root.clone()], &state);
+        let reg = PluginRegistry::scan(std::slice::from_ref(&root), &state);
         assert!(reg.get("vara.a").unwrap().enabled, "defaults apply");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -487,7 +487,7 @@ mod tests {
         let body = body.replace("version = \"1.0.0\"", "version = \"9.9.9\"");
         std::fs::write(dir.join("plugin.toml"), body).unwrap();
 
-        let mut reg = PluginRegistry::scan(&[root.clone()], &state);
+        let mut reg = PluginRegistry::scan(std::slice::from_ref(&root), &state);
         assert!(matches!(
             reg.get("vara.a").unwrap().integrity,
             Integrity::Broken { .. }
@@ -521,7 +521,7 @@ mod tests {
         );
         let state = root.join("state.json");
 
-        let reg = PluginRegistry::scan(&[root.clone()], &state);
+        let reg = PluginRegistry::scan(std::slice::from_ref(&root), &state);
         let plan = reg.load_plan().unwrap();
         assert!(!plan.contains(&"vara.off".to_string()));
         let pos = |id: &str| plan.iter().position(|p| p == id).unwrap();
@@ -544,7 +544,7 @@ mod tests {
         write_plugin(&root, "b", "vara.b", vec![Slot::Tool], vec![], false, false);
         let state = root.join("state.json");
 
-        let reg = PluginRegistry::scan(&[root.clone()], &state);
+        let reg = PluginRegistry::scan(std::slice::from_ref(&root), &state);
         let err = reg.load_plan().unwrap_err();
         assert!(err.contains("vara.b"), "{err}");
         assert!(err.contains("disabled"), "{err}");
@@ -564,7 +564,7 @@ mod tests {
             true,
         );
         let state = root.join("state.json");
-        let reg = PluginRegistry::scan(&[root.clone()], &state);
+        let reg = PluginRegistry::scan(std::slice::from_ref(&root), &state);
         let err = reg.load_plan().unwrap_err();
         assert!(err.contains("not installed"), "{err}");
         let _ = std::fs::remove_dir_all(&root);
@@ -584,7 +584,7 @@ mod tests {
         );
         write_plugin(&root, "t", "vara.t", vec![Slot::Theme], vec![], false, true);
         let state = root.join("state.json");
-        let reg = PluginRegistry::scan(&[root.clone()], &state);
+        let reg = PluginRegistry::scan(std::slice::from_ref(&root), &state);
         let grouped = reg.by_slot();
         assert_eq!(grouped.get("tool").unwrap().len(), 1);
         assert_eq!(grouped.get("toolset").unwrap().len(), 1);
@@ -599,7 +599,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("plugin.toml"), "id = \"vara.bad\"\nslots = []\n").unwrap();
         let state = root.join("state.json");
-        let reg = PluginRegistry::scan(&[root.clone()], &state);
+        let reg = PluginRegistry::scan(std::slice::from_ref(&root), &state);
         assert!(reg.rows().is_empty());
         assert_eq!(
             reg.errors().len(),

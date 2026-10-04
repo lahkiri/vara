@@ -371,7 +371,8 @@ impl EntityRuntime {
 
             // Live replan every 4 executed steps — the organization stays alive.
             // Retrieval may only spend down to the report reserve.
-            if i % 4 == 0 && i < plan_steps.len() && spent < budget - REPORT_BUDGET_TOKENS {
+            if i.is_multiple_of(4) && i < plan_steps.len() && spent < budget - REPORT_BUDGET_TOKENS
+            {
                 match self
                     .replan(
                         &mission.goal,

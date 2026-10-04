@@ -201,8 +201,20 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+            // Report **every** unreadable manifest, then fail once.
+            //
+            // `exit(1)` used to sit inside this loop, so a repository with three
+            // broken manifests reported only the first and then quit — the loop
+            // never looped (*clippy: "this loop never actually loops"*). A checker
+            // that hides two thirds of the problems is worse than no checker,
+            // because it implies the rest are fine.
+            let mut unreadable = 0usize;
             for (_, err) in registry.errors() {
                 eprintln!("unreadable manifest: {err}");
+                unreadable += 1;
+            }
+            if unreadable > 0 {
+                eprintln!("{unreadable} manifest(s) could not be read");
                 std::process::exit(1);
             }
         }
