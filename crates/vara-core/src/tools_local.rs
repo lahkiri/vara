@@ -778,9 +778,28 @@ mod tests {
     use super::*;
     use crate::tools_registry::{Roots, ToolCtx};
 
-    fn ctx(root: &str) -> ToolCtx {
+    /// A root that is absolute on **every** platform.
+    ///
+    /// These tests used to hardcode `C:/Users/me`, which Windows treats as
+    /// absolute and Unix treats as a single relative component — so
+    /// `Path::is_absolute()` disagreed between CI's Linux runner and a Windows
+    /// dev box, and five tests that passed locally failed there. Building the
+    /// root from the platform's own temp directory tests the behaviour (roots,
+    /// confinement, mock file lookup) instead of the spelling of a path.
+    fn demo_root() -> PathBuf {
+        let dir = std::env::temp_dir().join("vara-tools-demo");
+        std::fs::create_dir_all(&dir).ok();
+        dir
+    }
+
+    /// A path inside [demo_root], spelled the way the tools resolve it.
+    fn under(path: &str) -> String {
+        demo_root().join(path).to_string_lossy().replace('\\', "/")
+    }
+
+    fn ctx(root: &std::path::Path) -> ToolCtx {
         ToolCtx {
-            roots: Roots::new(vec![PathBuf::from(root)]),
+            roots: Roots::new(vec![root.to_path_buf()]),
             now_unix: 1_700_000_000,
             denied_paths: Vec::new(),
             memory: None,
@@ -789,16 +808,16 @@ mod tests {
 
     fn demo_host() -> MockToolHost {
         MockToolHost::new()
-            .with_file("C:/Users/me/Downloads/report.pdf", "pdf-bytes")
-            .with_file("C:/Users/me/Downloads/photo.jpg", "jpg")
-            .with_file("C:/Users/me/Downloads/notes/todo.md", "# todo\nbuy milk")
-            .with_volume("C:/Users/me", 300, 1000)
+            .with_file(&under("Downloads/report.pdf"), "pdf-bytes")
+            .with_file(&under("Downloads/photo.jpg"), "jpg")
+            .with_file(&under("Downloads/notes/todo.md"), "# todo\nbuy milk")
+            .with_volume(&demo_root().to_string_lossy(), 300, 1000)
     }
 
     #[test]
     fn system_info_answers_the_question_that_used_to_fail() {
         let registry = read_only_registry();
-        let result = registry.call("system_info", &json!({}), &ctx("C:/Users/me"), &demo_host());
+        let result = registry.call("system_info", &json!({}), &ctx(&demo_root()), &demo_host());
         assert!(result.ok, "{}", result.summary);
         assert!(result.summary.contains("MockOS 1.0"));
         assert!(result.summary.contains("8 CPU cores"));
@@ -810,7 +829,7 @@ mod tests {
         let result = registry.call(
             "list_dir",
             &json!({"path":"Downloads","limit":2}),
-            &ctx("C:/Users/me"),
+            &ctx(&demo_root()),
             &demo_host(),
         );
         assert!(result.ok, "{}", result.summary);
@@ -828,7 +847,7 @@ mod tests {
     fn find_files_filters_by_name_and_extension() {
         let registry = read_only_registry();
         let host = demo_host();
-        let ctx = ctx("C:/Users/me");
+        let ctx = ctx(&demo_root());
 
         let by_ext = registry.call("find_files", &json!({"ext":"pdf"}), &ctx, &host);
         assert!(by_ext.ok);
@@ -847,7 +866,7 @@ mod tests {
     fn read_file_returns_content_and_refuses_binaries_or_missing_files() {
         let registry = read_only_registry();
         let host = demo_host();
-        let ctx = ctx("C:/Users/me");
+        let ctx = ctx(&demo_root());
 
         let ok = registry.call(
             "read_file",
@@ -881,7 +900,7 @@ mod tests {
     #[test]
     fn disk_usage_reports_free_and_total() {
         let registry = read_only_registry();
-        let result = registry.call("disk_usage", &json!({}), &ctx("C:/Users/me"), &demo_host());
+        let result = registry.call("disk_usage", &json!({}), &ctx(&demo_root()), &demo_host());
         assert!(result.ok, "{}", result.summary);
         assert!(result.summary.contains("free of"));
         assert_eq!(result.data["free_bytes"], 700);
@@ -896,7 +915,7 @@ mod tests {
             }
         }
         let registry = read_only_registry();
-        let mut ctx = ctx("C:/Users/me");
+        let mut ctx = ctx(&demo_root());
         ctx.memory = Some(std::sync::Arc::new(Empty));
         let result = registry.call(
             "memory_search",
@@ -912,7 +931,7 @@ mod tests {
     fn every_read_tool_respects_the_roots_and_the_forbidden_floor() {
         let registry = read_only_registry();
         let host = demo_host();
-        let ctx = ctx("C:/Users/me/Downloads");
+        let ctx = ctx(&demo_root().join("Downloads"));
 
         // Outside the root.
         let outside = registry.call("list_dir", &json!({"path":"C:/Windows"}), &ctx, &host);
@@ -922,7 +941,7 @@ mod tests {
         // Credentials, even inside a plausible path.
         let secrets = registry.call(
             "read_file",
-            &json!({"path":"C:/Users/me/Downloads/.ssh/id_rsa"}),
+            &json!({"path": under("Downloads/.ssh/id_rsa")}),
             &ctx,
             &host,
         );
@@ -985,7 +1004,7 @@ mod tests {
             }
         }
         let registry = read_only_registry();
-        let ctx = ctx("C:/Users/me");
+        let ctx = ctx(&demo_root());
         let host = PanickingHost;
         // Missing required argument.
         let r = registry.call("list_dir", &json!({}), &ctx, &host);

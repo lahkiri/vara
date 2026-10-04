@@ -824,17 +824,38 @@ mod tests {
 
     #[test]
     fn paths_outside_the_roots_are_refused() {
+        // Roots are built from the platform's temp directory rather than a
+        // hardcoded `C:/…`: on Unix that spelling is a *relative* path, so
+        // `Path::is_absolute()` disagrees and the confinement logic takes a
+        // different branch. The behaviour under test is confinement, not the
+        // spelling of a Windows path.
+        let base = std::env::temp_dir().join("vara-root-confinement");
+        std::fs::create_dir_all(&base).ok();
+        let root = base.join("Documents");
+        std::fs::create_dir_all(&root).ok();
+
         let ctx = ToolCtx {
-            roots: Roots::new(vec![PathBuf::from("C:/Users/me/Documents")]),
+            roots: Roots::new(vec![root.clone()]),
             now_unix: 0,
             denied_paths: Vec::new(),
             memory: None,
         };
         assert!(ctx.resolve("notes.md").is_ok(), "relative joins the root");
-        assert!(ctx.resolve("C:/Users/me/Documents/a/b.md").is_ok());
-        for bad in ["C:/Windows/system32", "C:/Users/me/Desktop/x"] {
-            let err = ctx.resolve(bad).expect_err(bad);
-            assert!(matches!(err, ToolError::OutOfRoots { .. }));
+        let inside = root.join("a").join("b.md");
+        assert!(ctx.resolve(&inside.to_string_lossy()).is_ok());
+
+        // A sibling of the root, and an unrelated system path: both refused.
+        for bad in [
+            base.join("Desktop").join("x"),
+            std::path::PathBuf::from(if cfg!(windows) {
+                "C:/Windows/system32"
+            } else {
+                "/etc"
+            }),
+        ] {
+            let spelled = bad.to_string_lossy().to_string();
+            let err = ctx.resolve(&spelled).expect_err(&spelled);
+            assert!(matches!(err, ToolError::OutOfRoots { .. }), "{spelled}");
         }
     }
 
