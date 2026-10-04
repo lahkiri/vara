@@ -14,6 +14,7 @@ pub mod goals;
 pub mod heartbeat;
 pub mod host;
 pub mod llm;
+pub mod plugin;
 pub mod profile;
 pub mod provenance;
 pub mod seams;
@@ -28,6 +29,22 @@ pub use db::Database;
 pub use entity::{EntityEvent, EntityRuntime, EventSink, MissionInputs, MissionOutcome};
 pub use llm::LlmClient;
 pub use types::{EntityState, Settings};
+
+/// A lowercase hex SHA-256 of arbitrary bytes.
+///
+/// One implementation for the whole crate: plugin manifests, content hashes and
+/// action digests must agree byte for byte, and two copies of this would be two
+/// chances to disagree.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
 
 /// Load settings for a headless surface (the TUI, a daemon): the settings file
 /// when present, then the `VARA_PROVIDER_*` environment overrides.

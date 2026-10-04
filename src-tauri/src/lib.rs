@@ -66,6 +66,31 @@ pub fn notify_user(app: &AppHandle, title: &str, body: &str) {
 }
 
 pub fn run() {
+    // A development build must not share the installed app's WebView2 profile.
+    //
+    // Both binaries carry the same bundle identifier (`app.vara.entity`), so
+    // WebView2 puts both in one user-data folder — and it only permits one
+    // process at a time. Running `tauri dev` while the installed app is open
+    // (or after it has been open) made window creation fail with
+    // `0x800700AA ERROR_BUSY`, which looked like a broken runtime but was
+    // really two apps fighting over one profile.
+    //
+    // Giving the dev build its own folder is also correct on its own terms: a
+    // development instance must never touch the owner's real conversations and
+    // memory, which is what sharing the profile would mean.
+    if cfg!(debug_assertions) {
+        if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none() {
+            if let Ok(base) = std::env::var("LOCALAPPDATA") {
+                let dir = std::path::Path::new(&base)
+                    .join("app.vara.entity.dev")
+                    .join("EBWebView");
+                if std::fs::create_dir_all(&dir).is_ok() {
+                    std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &dir);
+                }
+            }
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main(app);
