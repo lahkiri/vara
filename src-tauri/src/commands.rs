@@ -1580,7 +1580,10 @@ pub async fn sys_execute(
                             Err(e) => (
                                 false,
                                 String::new(),
-                                format!("refused: {e} — the hard-deny floor covers commands as well as tools"),
+                                format!(
+                                    "refused: {} — the hard-deny floor covers commands as well as tools",
+                                    e.message()
+                                ),
                             ),
                             Ok(()) => run_command(&argv, owner_root(&snapshot)).await,
                         }
