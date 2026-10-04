@@ -85,13 +85,15 @@ impl vara_core::host::HostEnv for ShellEnv {
     fn log(&self, entry: vara_core::host::LogEntry) {
         // Plugin lifecycle facts are durable and attributable: a plugin that
         // fails to start must be visible after a restart, not only in a console
-        // that the owner never reads.
+        // that the owner never reads. The level is `warn` for a plugin that did
+        // not start, so a failure is filterable rather than buried in the stream.
+        let level = if entry.message.contains("failed") {
+            "warn"
+        } else {
+            "info"
+        };
         let _ = self.db.insert_event(
-            &if entry.kind == "plugin" {
-                "info"
-            } else {
-                "info"
-            },
+            level,
             &format!("plugin:{}", entry.kind),
             &format!("{} {}", entry.plugin, entry.message),
         );

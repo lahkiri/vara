@@ -267,11 +267,12 @@ pub fn launch_thread_mission(
             conversation_id,
             "assistant",
             &card.to_string(),
-            None,
-            0,
-            "ok",
-            "mission",
-            Some(id),
+            vara_core::db::ChatMessageMeta {
+                status: "ok",
+                kind: "mission",
+                mission_id: Some(id),
+                ..Default::default()
+            },
         )
         .map_err(|e| e.to_string())?;
     if let Ok(rec) = state.db.get_chat_message(card_id) {
@@ -1648,11 +1649,11 @@ pub async fn sys_execute(
         conversation_id,
         "assistant",
         &receipt.to_string(),
-        None,
-        0,
-        "ok",
-        "action",
-        None,
+        vara_core::db::ChatMessageMeta {
+            status: "ok",
+            kind: "action",
+            ..Default::default()
+        },
     ) {
         if let Ok(rec) = state.db.get_chat_message(mid) {
             let _ = app.emit("entity://chat/message", &rec);

@@ -193,6 +193,26 @@ pub struct MissionOutcome {
     pub spent_tokens: i64,
 }
 
+/// Repair pass. The brief is built **only** from the gate's deterministic
+/// output — the failing citations, the unresolved references and the quotes
+/// that were not found in the retrieved text. Research on self-correction is
+/// unambiguous that a model asked to critique its own work without external
+/// signal at best does nothing and at worst degrades it; the gate is the
+/// external signal, so it is the only thing the repair prompt may contain.
+/// What the repair pass needs, grouped.
+///
+/// Six positional arguments where three are `&str` and two are numbers is a
+/// call that compiles happily with two of them swapped — and the report, the
+/// verdict and the ledger would then silently disagree.
+struct RepairInputs<'a> {
+    report: &'a str,
+    check: &'a ProvenanceResult,
+    receipt: &'a provenance::GateReceipt,
+    ledger: &'a [RetrievedSource],
+    language: &'a str,
+    max_tokens: u32,
+}
+
 impl EntityRuntime {
     fn set_state(&self, state: EntityState, mission_id: Option<i64>) {
         self.sink.emit(EntityEvent::State { state, mission_id });
@@ -646,12 +666,14 @@ impl EntityRuntime {
             let repair_allowance = writer_max_tokens(budget.saturating_sub(spent));
             if let Ok((fixed, r_spent)) = self
                 .repair_report(
-                    &markdown,
-                    &final_check,
-                    &final_receipt,
-                    &ledger,
-                    &input.language,
-                    repair_allowance,
+                    RepairInputs {
+                        report: &markdown,
+                        check: &final_check,
+                        receipt: &final_receipt,
+                        ledger: &ledger,
+                        language: &input.language,
+                        max_tokens: repair_allowance,
+                    },
                     &llm,
                 )
                 .await
@@ -946,23 +968,19 @@ Tone: precise, dense, decision-ready. No filler, no self-praise."
             .await?;
         Ok((reply.content.trim().to_string(), reply.total_tokens()))
     }
-
-    /// Repair pass. The brief is built **only** from the gate's deterministic
-    /// output — the failing citations, the unresolved references and the quotes
-    /// that were not found in the retrieved text. Research on self-correction is
-    /// unambiguous that a model asked to critique its own work without external
-    /// signal at best does nothing and at worst degrades it; the gate is the
-    /// external signal, so it is the only thing the repair prompt may contain.
     async fn repair_report(
         &self,
-        report: &str,
-        check: &ProvenanceResult,
-        receipt: &provenance::GateReceipt,
-        ledger: &[RetrievedSource],
-        language: &str,
-        max_tokens: u32,
+        inputs: RepairInputs<'_>,
         llm: &LlmClient,
     ) -> Result<(String, u64)> {
+        let RepairInputs {
+            report,
+            check,
+            receipt,
+            ledger,
+            language,
+            max_tokens,
+        } = inputs;
         let lang_name = lang_name(language);
         let ledger_lines: Vec<String> = ledger
             .iter()

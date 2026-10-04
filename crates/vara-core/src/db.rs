@@ -9,6 +9,18 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
+/// The non-essential half of a chat message.
+///
+/// Grouped because five trailing positional arguments are unreadable, and
+/// `None, 0, "ok"` compiles just as happily with two of them swapped.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ChatMessageMeta<'a> {
+    pub model: Option<&'a str>,
+    pub tokens: i64,
+    pub status: &'a str,
+    pub kind: &'a str,
+    pub mission_id: Option<i64>,
+}
 pub struct Database {
     conn: Mutex<Connection>,
     fts: bool,
@@ -1109,27 +1121,38 @@ impl Database {
             conversation_id,
             role,
             content,
-            model,
-            tokens,
-            status,
-            "text",
-            None,
+            ChatMessageMeta {
+                model,
+                tokens,
+                status,
+                kind: "text",
+                mission_id: None,
+            },
         )
     }
 
     /// Full variant: `kind` selects the card the UI renders ("text" |
     /// "mission" | "action"), `mission_id` links the row to a live mission.
+    ///
+    /// The metadata travels as a struct rather than as five positional arguments
+    /// because `insert_chat_message_typed(1, "assistant", text, None, 0, "done",
+    /// "text", Some(7))` is a call nobody can read — and a swapped pair of
+    /// arguments here would still compile.
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_chat_message_typed(
         &self,
         conversation_id: i64,
         role: &str,
         content: &str,
-        model: Option<&str>,
-        tokens: i64,
-        status: &str,
-        kind: &str,
-        mission_id: Option<i64>,
+        meta: ChatMessageMeta<'_>,
     ) -> Result<i64> {
+        let ChatMessageMeta {
+            model,
+            tokens,
+            status,
+            kind,
+            mission_id,
+        } = meta;
         self.conn().execute(
             "INSERT INTO messages(conversation_id, role, content, model, tokens, status, kind, mission_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
