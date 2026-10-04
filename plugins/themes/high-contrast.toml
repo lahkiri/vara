@@ -1,0 +1,17 @@
+id = "high-contrast"
+name = "High Contrast"
+mode = "dark"
+based_on = "vara-dark"
+
+[tokens]
+bg = "#000000"
+bg2 = "#0a0a0a"
+surface = "#101010"
+card = "#101010"
+line = "#5a5a5a"
+line-strong = "#8a8a8a"
+text = "#ffffff"
+muted = "#d0d0d0"
+faint = "#a0a0a0"
+accent = "#ffe066"
+accent-soft = "#3a3410"

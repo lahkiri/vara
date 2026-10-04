@@ -1,0 +1,14 @@
+id = "midnight-amber"
+name = "Midnight Amber"
+mode = "dark"
+based_on = "vara-dark"
+
+[tokens]
+bg = "#0b0a08"
+bg2 = "#141210"
+surface = "#1a1714"
+card = "#1a1714"
+line = "#332c22"
+text = "#f6f1e7"
+accent = "#ffb000"
+accent-soft = "#3a2c12"

@@ -185,13 +185,25 @@ fn mission_closing_text(
 ) -> String {
     let arabic = lang == "ar" || lang == "arabic";
     match status {
+        // A mission whose report the gate rejected is not a success. The status
+        // comes from the verdict (entity.rs), so this arm exists to stop the
+        // product from announcing "complete" over its own FAIL.
+        "unverified" => {
+            let pct = backed.map(|r| (r * 100.0) as i64).unwrap_or(0);
+            if arabic {
+                format!("أنهيتُ العمل — لكن التقرير لم يجتز بوابة المصادر ({pct}% مستندة). التقرير محفوظ مع سبب الفشل: افتح التقارير لمراجعته قبل الاعتماد عليه.")
+            } else {
+                let v = verdict.unwrap_or(&String::new()).clone();
+                format!("Work finished, but the report did NOT pass the source gate (provenance {v}, {pct}% backed). It is stored with the reason — review it in Reports before relying on it.")
+            }
+        }
         "completed" => {
             let pct = backed.map(|r| (r * 100.0) as i64).unwrap_or(0);
             if arabic {
                 format!("أنهيت المهمة ✅ — التقرير جاهز (توثيق مصادره {pct}%). التقرير مربوط بهذه المحادثة الآن: اسألني عن أي تفصيل فيه وسأجيب منه مباشرة.")
             } else {
                 let v = verdict.unwrap_or(&String::new()).clone();
-                format!("Mission complete ✅ — report ready (provenance {v}, {pct}% backed). It is attached to this thread: ask me about any detail and I will answer from it.")
+                format!("Mission complete — report ready (provenance {v}, {pct}% backed). It is attached to this thread: ask me about any detail and I will answer from it.")
             }
         }
         "cancelled" => {

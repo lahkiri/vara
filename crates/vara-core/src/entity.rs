@@ -568,7 +568,20 @@ impl EntityRuntime {
             }
         }
 
-        let _ = self.db.update_mission_status(mission_id, "completed", None);
+        // The verdict decides the outcome. Before this, a report whose own gate
+        // said FAIL was still stored as `completed` and the chat announced
+        // "Mission complete ✅ … (provenance FAIL)" — the product's central
+        // promise contradicted by its own status field. A mission whose report
+        // the gate rejected is `unverified`, not `completed`.
+        let gate_passed = final_check.verdict.eq_ignore_ascii_case("PASS");
+        let final_status = if gate_passed {
+            "completed"
+        } else {
+            "unverified"
+        };
+        let _ = self
+            .db
+            .update_mission_status(mission_id, final_status, None);
         self.sink.emit(EntityEvent::ReportReady {
             id: report_id,
             mission_id,
@@ -590,7 +603,7 @@ impl EntityRuntime {
 
         Ok(MissionOutcome {
             mission_id,
-            status: "completed".into(),
+            status: final_status.into(),
             report_id: Some(report_id),
             verdict: Some(final_check.verdict),
             backed_ratio: Some(final_check.metrics.backed_ratio),
