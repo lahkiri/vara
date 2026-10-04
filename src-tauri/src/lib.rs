@@ -238,7 +238,21 @@ fn spawn_heartbeat(app: AppHandle) {
     if HEARTBEAT_SPAWNED.swap(true, Ordering::SeqCst) {
         return;
     }
+    // The latch must mean "a loop is alive", not "a loop was started once".
+    // The loop returns permanently when the owner disables the heartbeat, but
+    // nothing cleared the flag — so ON → OFF → ON in one session never restarted
+    // it, and the toggle read "on" while the entity never reflected again. This
+    // guard clears the flag on every exit path, including the early returns,
+    // which is the same drop-based pattern `BusyGuard` already uses.
+    struct HeartbeatLatch;
+    impl Drop for HeartbeatLatch {
+        fn drop(&mut self) {
+            HEARTBEAT_SPAWNED.store(false, Ordering::SeqCst);
+        }
+    }
+    let _latch = HeartbeatLatch;
     tauri::async_runtime::spawn(async move {
+        let _latch = _latch;
         loop {
             let (minutes, enabled) = {
                 match app.try_state::<AppState>() {
