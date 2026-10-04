@@ -635,6 +635,46 @@ impl Database {
         Ok(())
     }
 
+    /// Every mission still marked `running`, oldest first.
+    ///
+    /// At startup, before any worker exists, no mission can be running: the
+    /// process that was executing it is gone. These rows are therefore zombie
+    /// state — the UI showed a mission in progress, the cancel button refused
+    /// them (`busy` is false), and nothing ever moved them.
+    pub fn missions_marked_running(&self) -> Result<Vec<i64>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT id FROM missions WHERE status = 'running' ORDER BY id")?;
+        let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Clear zombie missions after a restart.
+    ///
+    /// This is the mission counterpart of [`Database::expire_action_proposals`],
+    /// and it exists for the same reason: durable state written by a process that
+    /// died must not be presented as live. A killed mission becomes
+    /// **`interrupted`** with a reason, which is a state the owner can act on
+    /// (restart it), instead of `running`, which is a state only the dead process
+    /// could have left behind.
+    ///
+    /// It deliberately does **not** resume anything. Resuming is a product
+    /// decision with a cost, and pretending to resume while re-running a mission
+    /// from its beginning would be worse than saying plainly that it stopped.
+    /// The ledger, the notes and any partial report are all still in the database,
+    /// so a future recovery can be built on top of this without another migration.
+    pub fn recover_interrupted_missions(&self, reason: &str) -> Result<usize> {
+        let n = self.conn().execute(
+            "UPDATE missions SET status = 'interrupted', error = ?1 WHERE status = 'running'",
+            params![reason],
+        )?;
+        Ok(n)
+    }
+
     pub fn update_mission_progress(&self, id: i64, steps_done: i64, spent: i64) -> Result<()> {
         self.conn().execute(
             "UPDATE missions SET steps_done = ?2, spent_tokens = ?3 WHERE id = ?1",
@@ -1677,5 +1717,44 @@ mod tests {
             db.get_action_proposal(id).unwrap().unwrap().state,
             ProposalState::Denied
         );
+    }
+
+    /// The zombie state an auditor found in v0.7.0: kill the app mid-mission and
+    /// the row stayed `running` forever, with no sweep at startup and a cancel
+    /// button that refused it because `busy` was false.
+    ///
+    /// `recover_interrupted_missions` closes that, on the same pattern the
+    /// approval queue already used for stale proposals.
+    #[test]
+    fn a_mission_left_running_is_recovered_as_interrupted() {
+        let db = Database::open_memory().unwrap();
+        let running = db.create_mission("killed mid-flight", 10_000, 10).unwrap();
+        let finished = db.create_mission("finished normally", 10_000, 10).unwrap();
+        db.update_mission_status(running, "running", None).unwrap();
+        db.update_mission_status(finished, "completed", None)
+            .unwrap();
+
+        // Before recovery the zombie is visible and would be shown as live.
+        assert_eq!(db.missions_marked_running().unwrap(), vec![running]);
+
+        let n = db
+            .recover_interrupted_missions("the app stopped while this was running")
+            .unwrap();
+        assert_eq!(n, 1, "exactly the running mission is recovered");
+
+        // The interrupted mission is no longer running, carries a reason, and
+        // the completed one was not touched.
+        assert!(db.missions_marked_running().unwrap().is_empty());
+        let zombie = db.get_mission(running).unwrap();
+        assert_eq!(zombie.status, "interrupted");
+        assert!(zombie
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("stopped while this was running"));
+        assert_eq!(db.get_mission(finished).unwrap().status, "completed");
+
+        // Idempotent: a second boot with nothing running recovers nothing.
+        assert_eq!(db.recover_interrupted_missions("again").unwrap(), 0);
     }
 }

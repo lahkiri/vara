@@ -154,6 +154,30 @@ pub fn run() {
             let db = Arc::new(
                 Database::open(&db_path).map_err(|e| format!("cannot open database: {e}"))?,
             );
+
+            // Reconcile durable state with reality before anything reads it.
+            //
+            // No mission can be `running` at this instant: the process that was
+            // executing it no longer exists. Leaving those rows as they were is
+            // what produced the v0.7.0 zombie — a mission shown as in progress
+            // that the cancel button refused (its guard is `busy`, which is
+            // false) and that nothing ever moved. This is the same reconciliation
+            // the approval queue already does for expired proposals.
+            match db.recover_interrupted_missions(
+                "the app stopped while this mission was running — it can be started again",
+            ) {
+                Ok(n) if n > 0 => {
+                    let _ = db.insert_event(
+                        "warn",
+                        "recovery",
+                        &format!("{n} mission(s) were interrupted by a restart"),
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    let _ = db.insert_event("warn", "recovery", &format!("recovery failed: {e}"));
+                }
+            }
             let cfg = settings::load(&data_dir);
             app.manage(AppState {
                 db: db.clone(),

@@ -111,6 +111,7 @@
     if (s === "running") return t("status_running");
     if (s === "completed") return t("status_completed");
     if (s === "unverified") return t("status_unverified");
+    if (s === "interrupted") return t("status_interrupted");
     if (s === "failed") return t("status_failed");
     if (s === "cancelled") return t("status_cancelled");
     return s;
@@ -202,7 +203,7 @@
                       </span>
                     </div>
                     <div class="text-sm font-bold leading-6">{card.goal}</div>
-                    {#if chat.liveMissions[card.mission_id]?.status !== "completed" && chat.liveMissions[card.mission_id]?.status !== "unverified" && chat.liveMissions[card.mission_id]?.status !== "failed" && chat.liveMissions[card.mission_id]?.status !== "cancelled"}
+                    {#if chat.liveMissions[card.mission_id]?.status !== "completed" && chat.liveMissions[card.mission_id]?.status !== "unverified" && chat.liveMissions[card.mission_id]?.status !== "interrupted" && chat.liveMissions[card.mission_id]?.status !== "failed" && chat.liveMissions[card.mission_id]?.status !== "cancelled"}
                       <div class="mission-progress mt-3">
                         <div class="mission-progress-fill" style={"width:" + Math.min(100, ((chat.liveMissions[card.mission_id]?.steps_done ?? 0) / Math.max(1, chat.liveMissions[card.mission_id]?.max_steps ?? 14)) * 100) + "%"}></div>
                       </div>
