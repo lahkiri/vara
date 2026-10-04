@@ -48,3 +48,20 @@ Format: question · why it blocks · my recommendation · what I do meanwhile.
 **Blocked work:** U-02. Spec §6.3 asks for a transparent, always-on-top, click-through-except-avatar window; the Tauri APIs for that on Windows need a real spike (multiple windows + per-region click-through + no focus stealing).
 **My recommendation:** spike it in a branch first; if click-through is unreliable on Windows 11, ship **tray states + toast with action** and treat the overlay as an enhancement, not the plan of record.
 **Meanwhile:** U-01 (Today) carries presence on its own.
+
+## Q-08 — The desktop window cannot start until this machine is restarted
+
+**Blocked work:** any visual verification (the dark titlebar, U-01/U-05/U-06, screenshots of a real chat).
+**Facts, all from measurement rather than inference:** the app **now builds** — `cargo check -p vara` finishes in 54 s on MSVC, and `npm run tauri dev` compiled 467 crates in 2 m 28 s and launched `target\debug\vara.exe`. It then fails at `tauri::app::setup` with `WebView2 error: WindowsError(0x8000FFFF)` (and, with the profile data present, `0x800700AA`). Ruled out: `decorations` (fails identically with the default title bar), a locked profile directory (renaming `EBWebView` succeeds), stale processes (none running), a missing runtime (154.0.4258.48 is installed and its files are present).
+**Likely cause, and it is mine:** earlier in this session I force-killed `msedgewebview2` children with `Stop-Process -Force`. A force-killed WebView2 environment stays wedged system-wide until Windows restarts.
+**My recommendation:** restart Windows, then re-run `npm run tauri dev`; if it still fails, repair the WebView2 runtime (Settings → Apps → Microsoft Edge WebView2 Runtime → Modify → Repair). Nothing in the product depends on this: `vara-tui` runs the same entity end to end today.
+**Meanwhile:** every interface-independent part of the plan continues, verified through `vara-tui` and `cargo test` instead.
+
+## Q-09 — `disk_usage` returns no totals on this machine
+
+**Blocked work:** a truthful answer to "how much space is left", which is a natural first question for a resident agent.
+**Facts:** asked through `vara-tui`, the router correctly chose `disk_usage`, and the tool returned `drive totals are not available on this platform yet`. The model then said so plainly instead of inventing a number — the honest behaviour, but the capability is missing.
+**My recommendation:** implement volume totals on Windows (a `GetDiskFreeSpaceExW` call, or a `sysinfo` dependency) rather than leaving the tool advertised-but-empty. A tool that always answers "unknown" is worse than an absent one, because the router will keep choosing it.
+**Meanwhile:** the failure is visible and honest, so nothing downstream is misled.
+
+
