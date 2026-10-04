@@ -11,6 +11,7 @@ pub mod dedup;
 pub mod entity;
 pub mod exec_policy;
 pub mod heartbeat;
+pub mod host;
 pub mod llm;
 pub mod provenance;
 pub mod tool_loop;

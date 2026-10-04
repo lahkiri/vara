@@ -354,7 +354,11 @@ pub struct ToolSpec {
 
 /// A capability. Implementations must be **pure with respect to the outside
 /// world except through [`ToolHost`]**, so the harness can run them headless.
-pub trait Tool {
+///
+/// `Send + Sync` is required rather than incidental: the registry is built
+/// inside async Tauri command handlers, whose futures must be `Send`. A tool
+/// holding thread-affine state would make the whole shell uncompilable.
+pub trait Tool: Send + Sync {
     fn spec(&self) -> &ToolSpec;
 
     /// Structural validation only — no I/O, no clock, no environment.

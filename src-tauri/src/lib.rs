@@ -3,6 +3,7 @@
 
 mod commands;
 mod settings;
+mod tool_bridge;
 mod tray;
 mod watcher;
 
