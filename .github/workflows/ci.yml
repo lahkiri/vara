@@ -33,9 +33,14 @@ jobs:
         # links the real Windows APIs. Installing a full desktop stack on the
         # Linux runner to lint a core that never touches GTK would be worse than
         # splitting the check, not better.
-      - name: Whole-workspace tests (not just the core crate)
-        run: cargo test --workspace -p vara-core -p vara-tui -p vara-plugins
+      - name: Tests for every crate that builds without GTK
+        run: cargo test -p vara-core -p vara-tui -p vara-plugins
         # Same reason as clippy: the core crates on Linux, the shell on Windows.
+        # `--workspace` must NOT come back here — with the shell in the set it
+        # fails on `gobject-2.0.pc` before running a single test. I wrote exactly
+        # that mistake into this line once: locally I ran `-p` without
+        # `--workspace`, so the command I verified was not the command I
+        # committed, and CI said so in ninety seconds.
       - name: Documentation is consistent with the repository
         run: node scripts/check-consistency.mjs
         # This job exists because the repository shipped a release whose notes
