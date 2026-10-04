@@ -1,5 +1,77 @@
 # Changelog
 
+## v0.7.0 — Everything is a plugin (unreleased)
+
+### The composition model
+- **A plugin host with no privileged core** (`host.rs`): plugins contribute
+  services and typed events, and every registration is a **reversible effect**
+  that unwinds on unload. A plugin that fails to start is recorded unhealthy with
+  its reason and does not take the host down.
+- **Capability seams** (`seams.rs`, `host.rs`): `register` / `service` / `has_plugin`.
+  Registering twice under one name is refused; unloading a provider closes the
+  seam; a consumer loaded afterwards **degrades explicitly** instead of silently
+  defaulting. The machine travels over `tools.host` as `Arc<dyn ToolHost>`, so the
+  mock and the real filesystem are genuinely interchangeable.
+- **Profiles and bundles** (`profile.rs`): `desktop`, `tui`, `headless` and
+  `minimal` compose the *same* core and differ only in the interface row — the
+  same entity on a laptop, over SSH, or on a server with no graphics.
+- **Twelve slots**: tool, toolset, brain, memory, interface, theme, persona,
+  channel, goal_engine, subagent, mcp, skill.
+
+### The manifest contract (`plugin.rs`)
+- Declared, deny-by-default **permissions** (`read_files`, `write_files`,
+  `run_programs`, `network`, `read_memory`, `write_memory`, `notify`) with
+  `dangerous()` returning what must appear in an approval card.
+- **SHA-256 over the claims** (canonical: id, version, sorted slots, sorted
+  requires, permissions, sorted files) plus a **content hash over the folder**,
+  because a hash that can be forged by omitting a file is not an integrity check.
+  A wrong hash is fatal; a missing one is labelled *unverified*, never *safe*.
+- **Deterministic, cycle-safe dependency ordering** that names the participants
+  of a cycle instead of breaking it arbitrarily.
+
+### Decisions and visibility (`plugin_registry.rs`, `plugin_bridge.rs`, `vara-plugins`)
+- The owner's decisions live apart from the plugin's claims:
+  **approval is bound to the claims hash**, so a plugin that later adds
+  `run_programs` is un-approved again. Enabling without approval is refused by
+  the core, and the refusal travels to the UI verbatim.
+- **Fifteen plugins ship with the product**, each a real folder:
+  read tools and write tools, browser use, computer use, MCP client, skills,
+  subagents, Agent Swarm Team, goals, themes, personas, channels, interfaces,
+  model adapters, memory backends. Everything dangerous ships **present but off**.
+- **`vara-plugins`** makes the composition inspectable without the GUI:
+  `list`, `plan`, `check` (non-zero on a bad plan, for CI), `enable`, `disable`,
+  `approve`, `hash`.
+- **A plugin panel in the app** grouped by slot, showing integrity
+  (`موثّقة` / `غير موثّقة` / `تالفة`), what each plugin asks for *before* the
+  switch, and refusals where the attempt was made.
+
+### Interfaces
+- **`vara-tui`** — the terminal surface: one file of application code over the
+  same core, no window, no WebView2. Verified end to end against a live model:
+  asked "اشرح نظامي" it chose `system_info`, ran it on the real machine, and
+  answered from what it read — including saying it could not read memory size
+  rather than guessing.
+- **The dev build launches again**: it sets its own `WEBVIEW2_USER_DATA_FOLDER`
+  in debug, because the installed app and a development build share one bundle
+  identifier and WebView2 allows one process per profile.
+- **Views are addressable by URL hash** (`#plugins`, `#settings`), so every
+  screen is reachable by a screenshot script or a test.
+
+### Goals (`goals.rs`)
+- Outcomes with a **measured** stopping condition: a metric with a target, or a
+  checklist. There is deliberately **no "the model decides it is done" variant** —
+  a goal that cannot be measured is refused at construction.
+- Metrics move only when a step says they moved, and the step carries its
+  evidence; budgets and step ceilings are hard; a step that needs the owner parks
+  the goal; consecutive no-change steps become a question to the owner instead of
+  a loop; and the default decision is **silence**.
+
+### Reliability and honesty
+- A tampered manifest reports `BROKEN` and will not load. Verified by editing a
+  shipped plugin and watching it fail, then restoring it.
+- **Local debug builds are 2.44 GB instead of 10.4 GB** and finish in 2m28s after
+  tuning `[profile.dev]`, which is what makes building on an ordinary laptop
+  possible at all.
 ## v0.6.0 — Approvals you can audit, provenance you can measure (2026-10-02)
 
 ### Security: the model proposes, the backend decides
@@ -166,7 +238,7 @@
 
 ---
 
-## v0.4.0 — The entity sees the screen (2026-10-01) — The entity sees the screen (2026-10-01)
+## v0.4.0 — The entity sees the screen (2026-10-01)
 
 ### First step into computer use: `screenshot`
 - New `[[sys]]` action: `{"action":"screenshot","target":"screen"}`. Vara can
