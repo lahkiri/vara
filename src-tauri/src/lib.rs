@@ -25,6 +25,14 @@ pub struct AppState {
     pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
     /// Per-conversation stop flags for streaming chat replies.
     pub chat_cancels: Mutex<HashMap<i64, Arc<AtomicBool>>>,
+    /// The plugin host this process actually runs.
+    ///
+    /// Until this existed, every plugin capability in the repository was reachable
+    /// only from tests: the shell built its runtime directly, so "everything is a
+    /// plugin" described library code the product never called. The host is created
+    /// at startup, the shipped capabilities are loaded into it, and the runtime
+    /// resolves what it can from it — see `AppState::mission_sink`.
+    pub host: Arc<vara_core::host::Host>,
 }
 
 impl AppState {
@@ -33,6 +41,60 @@ impl AppState {
             .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
+    }
+
+    /// The event sink a mission should use: the `log` seam when a plugin fills it,
+    /// the built-in sink otherwise.
+    ///
+    /// This is the production end of the first real seam. The fallback is
+    /// deliberate — a fresh install with no plugin registered must still run — and
+    /// `EntityRuntime::require_log_sink` exists for a caller that would rather
+    /// refuse than degrade.
+    pub fn mission_sink(&self, app: &AppHandle) -> Arc<dyn vara_core::entity::EventSink> {
+        vara_core::entity::sink_from_host(&self.host, Arc::new(TauriSink { app: app.clone() }))
+    }
+}
+
+/// A host environment for the desktop shell.
+///
+/// The gate answer is deliberately conservative: the shell resolves *capabilities*
+/// through the host, and capability registration is not a consequential action, so
+/// `Allow` here does not open the action boundary. Every OS action still goes
+/// through the approval queue in `commands.rs`, exactly as before — this struct
+/// must never become a second, weaker path.
+struct ShellEnv {
+    db: Arc<Database>,
+}
+
+impl vara_core::host::HostEnv for ShellEnv {
+    fn authorize(&self, request: &vara_core::host::GateRequest) -> vara_core::host::GateDecision {
+        // Anything that is not a pure read is left for the owner's approval
+        // machinery rather than being allowed by the host.
+        if request.class == "R" {
+            vara_core::host::GateDecision::Allow
+        } else {
+            vara_core::host::GateDecision::NeedsApproval {
+                reason: format!(
+                    "`{}` is a consequential action and is decided in the approval queue",
+                    request.action
+                ),
+            }
+        }
+    }
+
+    fn log(&self, entry: vara_core::host::LogEntry) {
+        // Plugin lifecycle facts are durable and attributable: a plugin that
+        // fails to start must be visible after a restart, not only in a console
+        // that the owner never reads.
+        let _ = self.db.insert_event(
+            &if entry.kind == "plugin" {
+                "info"
+            } else {
+                "info"
+            },
+            &format!("plugin:{}", entry.kind),
+            &format!("{} {}", entry.plugin, entry.message),
+        );
     }
 }
 
@@ -177,6 +239,46 @@ pub fn run() {
                 }
             }
             let cfg = settings::load(&data_dir);
+
+            // The plugin host this process runs, with the shipped capabilities
+            // loaded into it. This is what makes the seams reachable in a real
+            // launch instead of only from tests: `log` is the first, and
+            // `AppState::mission_sink` resolves the mission's event stream
+            // through it.
+            let host = Arc::new(vara_core::host::Host::new(Arc::new(ShellEnv {
+                db: db.clone(),
+            })));
+
+            // A `LogPlugin` whose sink is the built-in one: durable lines go to
+            // the same database the shell already writes, but the *path* is now a
+            // seam, so a different log plugin replaces it without a recompile.
+            struct DbLog {
+                db: Arc<Database>,
+            }
+            impl vara_core::seams::EventSinkCap for DbLog {
+                fn record(&self, kind: &str, message: &str) {
+                    let _ = self.db.insert_event("info", kind, message);
+                }
+            }
+            let log_plugin: Arc<dyn vara_core::host::Plugin> =
+                Arc::new(vara_core::seams::LogPlugin::new(Arc::new(DbLog {
+                    db: db.clone(),
+                })));
+            match host.load(log_plugin) {
+                Ok(_) => {
+                    let _ =
+                        db.insert_event("info", "plugins", "log seam filled by the shipped plugin");
+                }
+                Err(why) => {
+                    // A failure here is not fatal — the mission falls back to the
+                    // built-in sink — but it must be visible, because a capability
+                    // that silently failed to register is exactly the class of
+                    // defect this audit was about.
+                    let _ =
+                        db.insert_event("warn", "plugins", &format!("log plugin failed: {why}"));
+                }
+            }
+
             app.manage(AppState {
                 db: db.clone(),
                 settings: RwLock::new(cfg.clone()),
@@ -185,6 +287,7 @@ pub fn run() {
                 busy: Arc::new(AtomicBool::new(false)),
                 watcher: Mutex::new(None),
                 chat_cancels: Mutex::new(HashMap::new()),
+                host,
             });
 
             tray::create(&handle).map_err(|e| e.to_string())?;
@@ -278,7 +381,10 @@ fn spawn_heartbeat(app: AppHandle) {
             }
             let runtime = EntityRuntime {
                 db: st.db.clone(),
-                sink: Arc::new(TauriSink { app: app.clone() }),
+                // Same seam as the mission path: one resolution point, so the
+                // heartbeat and a mission can never disagree about where the
+                // entity's events go.
+                sink: st.mission_sink(&app),
                 http: HTTP_CLIENT.clone(),
             };
             if let Ok(llm) = vara_core::LlmClient::new(&snap.provider) {

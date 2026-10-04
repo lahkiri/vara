@@ -1,7 +1,7 @@
 //! All Tauri commands exposed to the webview. Thin layer: validate, call
 //! vara-core, map errors to strings.
 
-use crate::{notify_user, settings, tray, AppState, TauriSink, HTTP_CLIENT};
+use crate::{notify_user, settings, tray, AppState, HTTP_CLIENT};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -307,7 +307,10 @@ fn spawn_mission_runner(app: AppHandle, mission_id: i64, conversation_id: Option
 
     let runtime = EntityRuntime {
         db: st.db.clone(),
-        sink: Arc::new(TauriSink { app: app.clone() }),
+        // Resolved from the `log` seam: the mission's event stream is a
+        // capability the composition provides, and the built-in sink is only the
+        // fallback when no plugin fills it.
+        sink: st.mission_sink(&app),
         http: HTTP_CLIENT.clone(),
     };
     let inputs = MissionInputs {
