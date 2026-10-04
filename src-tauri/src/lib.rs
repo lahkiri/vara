@@ -2,6 +2,7 @@
 //! notifications, autostart, single instance, and a folder watcher.
 
 mod commands;
+mod plugin_bridge;
 mod settings;
 mod tool_bridge;
 mod tray;
@@ -111,6 +112,11 @@ pub fn run() {
             commands::sys_approve,
             commands::list_action_proposals,
             commands::list_skills,
+            plugin_bridge::list_plugins,
+            plugin_bridge::set_plugin_enabled,
+            plugin_bridge::approve_plugin,
+            plugin_bridge::reveal_plugin,
+            plugin_bridge::open_user_plugin_dir,
             commands::pause_entity,
             commands::cancel_mission,
             commands::get_entity_status,
