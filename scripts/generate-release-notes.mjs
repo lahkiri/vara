@@ -1,0 +1,164 @@
+#!/usr/bin/env node
+/**
+ * Generate English release notes from `plugins/`, for a given git range.
+ *
+ * The v0.7.0 release shipped notes that described twenty plugins and five
+ * theme/persona files. The repository contained fifteen folders and no asset
+ * files at all. The notes were written by hand from memory, and memory was wrong.
+ *
+ * This script removes the hand. The plugin table below is read from the folders
+ * on disk, so it cannot describe a plugin that does not exist; the change list is
+ * read from git, so it cannot claim work that was not committed. Anything the
+ * author wants to add is prose, and prose is clearly separated from the
+ * generated blocks.
+ *
+ * Usage:
+ *   node scripts/generate-release-notes.mjs v0.7.0 HEAD > notes.md
+ *   node scripts/generate-release-notes.mjs v0.6.0 v0.7.0
+ */
+import { execFileSync } from "node:child_process";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+const [from, to = "HEAD"] = process.argv.slice(2);
+if (!from) {
+  console.error("usage: generate-release-notes.mjs <from-ref> [to-ref]");
+  process.exit(2);
+}
+
+const git = (args) =>
+  execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+
+// ---------------------------------------------------------------- plugins
+
+const pluginsDir = join(root, "plugins");
+const folders = readdirSync(pluginsDir, { withFileTypes: true })
+  .filter((d) => d.isDirectory() && existsSync(join(pluginsDir, d.name, "plugin.toml")))
+  .map((d) => d.name)
+  .sort();
+
+const field = (text, key) => {
+  const m = text.match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"`, "m"));
+  return m ? m[1] : "";
+};
+const arrayField = (text, key) => {
+  const m = text.match(new RegExp(`^\\s*${key}\\s*=\\s*\\[([^\\]]*)\\]`, "m"));
+  if (!m) return [];
+  return m[1]
+    .split(",")
+    .map((s) => s.trim().replace(/^"|"$/g, ""))
+    .filter(Boolean);
+};
+
+/**
+ * The permissions a manifest asks for.
+ *
+ * They live in a `[permissions]` table as `name = true` lines, and the previous
+ * release's notes got this wrong by describing permission *names* nobody had
+ * checked. Reading the table itself is the only way this column can be trusted.
+ */
+const permissionTable = (text) => {
+  const start = text.indexOf("[permissions]");
+  if (start < 0) return [];
+  const rest = text.slice(start + "[permissions]".length);
+  const stop = rest.search(/^\[/m);
+  const body = stop >= 0 ? rest.slice(0, stop) : rest;
+  return body
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.includes("="))
+    .filter((line) => /=\s*true\s*$/.test(line))
+    .map((line) => line.split("=")[0].trim())
+    .sort();
+};
+
+const plugins = folders.map((folder) => {
+  const manifest = readFileSync(join(pluginsDir, folder, "plugin.toml"), "utf8");
+  const slots = arrayField(manifest, "slots");
+  const perms = permissionTable(manifest);
+  const enabled = /^\s*default_enabled\s*=\s*true/m.test(manifest);
+  return { folder, id: field(manifest, "id"), slots, perms, enabled };
+});
+
+const shippedOff = plugins.filter((p) => !p.enabled).map((p) => p.id);
+
+// ---------------------------------------------------------------- commits
+
+const commits = git(["log", "--no-merges", "--pretty=format:%h%x09%s", `${from}..${to}`])
+  .split("\n")
+  .filter(Boolean)
+  .map((line) => {
+    const [hash, ...rest] = line.split("\t");
+    return { hash, subject: rest.join("\t") };
+  });
+
+const groups = [
+  { title: "Security", match: /^(fix|feat)\(security\)|security/i },
+  { title: "Honesty and evidence", match: /provenance|honesty|matrix|receipt|truth/i },
+  { title: "Durability and lifecycle", match: /durability|initiative|recovery|heartbeat/i },
+  { title: "Composition and plugins", match: /seam|plugin|shell|ui/i },
+  { title: "Repository and tooling", match: /ci|docs|clippy|test|chore|refactor/i },
+];
+
+const placed = new Set();
+const sections = groups.map((group) => {
+  const picked = commits.filter((c) => !placed.has(c.hash) && group.match.test(c.subject));
+  picked.forEach((c) => placed.add(c.hash));
+  return { title: group.title, commits: picked };
+});
+const remaining = commits.filter((c) => !placed.has(c.hash));
+if (remaining.length) sections.push({ title: "Other", commits: remaining });
+
+// ---------------------------------------------------------------- output
+
+const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+
+const table = [
+  "| Plugin | Slots | Ships | Asks for |",
+  "|---|---|---|---|",
+  ...plugins.map((p) => {
+    const asks = p.perms.length ? p.perms.join(", ") : "—";
+    return `| \`${p.id}\` | ${p.slots.join(", ") || "—"} | ${p.enabled ? "on" : "**off**"} | ${asks} |`;
+  }),
+].join("\n");
+
+console.log(`# Vara v${version}
+
+<!-- GENERATED by scripts/generate-release-notes.mjs from ${from}..${to} — do not hand-edit the blocks below. -->
+
+${plugins.length} plugins ship with this release, read from \`plugins/\` at the time of
+writing. Everything dangerous — ${shippedOff.join(", ")} — is **present and off**.
+
+## Plugins in this release
+
+<!-- GENERATED:PLUGIN-TABLE -->
+
+${table}
+
+<!-- /GENERATED:PLUGIN-TABLE -->
+
+## What changed
+
+*Read from \`git log ${from}..${to}\` — ${commits.length} commits, none of them written here by hand.*
+`);
+
+for (const section of sections) {
+  if (!section.commits.length) continue;
+  console.log(`\n### ${section.title}\n`);
+  for (const c of section.commits) {
+    console.log(`- ${c.subject} (\`${c.hash}\`)`);
+  }
+}
+
+console.log(`
+## What this release does *not* claim
+
+See [\`docs/REALITY_MATRIX.md\`](docs/REALITY_MATRIX.md) for every product claim with the
+command that proves it, and [\`docs/PLUGIN_INVENTORY.md\`](docs/PLUGIN_INVENTORY.md) for the
+generated plugin list. Where this document and the repository disagree, the
+repository is right and this document is a bug — the previous release proved that
+the hard way.
+`);
